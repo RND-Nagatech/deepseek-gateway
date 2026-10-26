@@ -1,0 +1,32 @@
+{
+  "name": "@deepseek-monitor/backend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "nest start --watch",
+    "dev:demo": "DEEPSEEK_BASE_URL=http://127.0.0.1:4000 nest start --watch",
+    "mock": "node tools/mock-deepseek.mjs",
+    "build": "nest build",
+    "start": "node dist/main.js",
+    "test": "tsx --test src/pricing/*.test.ts src/gateway/*.test.ts src/clients/*.test.ts"
+  },
+  "dependencies": {
+    "@nestjs/common": "^12.2.0",
+    "@nestjs/core": "^12.2.0",
+    "@nestjs/mongoose": "^12.0.0",
+    "@nestjs/platform-fastify": "^12.2.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.2",
+    "dotenv": "^16.6.1",
+    "fastify": "^5.12.7",
+    "mongoose": "^8.19.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^12.0.10",
+    "@types/node": "^22.18.6",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}
