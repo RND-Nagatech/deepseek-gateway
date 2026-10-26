@@ -71,7 +71,7 @@ Ganti kedua nilai contoh tersebut sebelum menjalankan server yang dapat diakses 
 Jalankan aplikasi dari direktori proyek:
 
 ```sh
-npm install
+npm install --include=optional
 npm run dev
 ```
 

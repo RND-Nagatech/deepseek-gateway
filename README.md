@@ -18,10 +18,10 @@ The backend connects to `mongodb://127.0.0.1:27017/deepseek_monitor` without Mon
 
 ## Start locally
 
-From the project directory:
+From the repository root (the directory containing this file):
 
 ```sh
-npm install
+npm install --include=optional
 npm run dev
 ```
 
