@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -91,8 +92,44 @@ function safeJsonParse(value: string): unknown {
   }
 }
 
+function safeDiagnosticText(value: string): string {
+  return value
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/["']?(client[_-]?secret|access[_-]?token|authorization|x-signature)["']?\s*[:=]\s*["']?[^,}\s"']+/gi, '$1=[redacted]')
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 400);
+}
+
+function providerErrorSummary(body: unknown, responseText: string): string {
+  const envelope = asRecord(body);
+  const data = asRecord(envelope?.data);
+  const error = asRecord(envelope?.error);
+  const dataError = asRecord(data?.error);
+  const candidates = [
+    envelope?.code,
+    envelope?.error_code,
+    envelope?.message,
+    envelope?.error_description,
+    typeof envelope?.error === 'string' ? envelope.error : null,
+    error?.code,
+    error?.message,
+    data?.code,
+    data?.message,
+    typeof data?.error === 'string' ? data.error : null,
+    dataError?.code,
+    dataError?.message,
+    typeof envelope?.data === 'string' ? envelope.data : null,
+  ].filter((value): value is string | number => typeof value === 'string' || typeof value === 'number');
+  const summary = candidates.length ? candidates.join(' | ') : responseText;
+  return safeDiagnosticText(String(summary)) || 'empty response body';
+}
+
 @Injectable()
 export class SingaPayService {
+  private readonly logger = new Logger(SingaPayService.name);
   private cachedToken: { value: string; expiresAt: number } | null = null;
   private tokenRequest: Promise<string> | null = null;
 
@@ -170,8 +207,12 @@ export class SingaPayService {
       expired_at: jakartaIso(expiresAt),
       merchant_reff_no: merchantRef,
     };
+    const diagnosticId = randomBytes(6).toString('hex');
+    const providerBase = new URL(config.baseUrl);
+    const providerTarget = `${providerBase.host}${providerBase.pathname}`;
     let response: Response;
     let responseBody: unknown;
+    let responseText = '';
     try {
       response = await fetch(
         `${config.baseUrl}/api/v1.0/qris-dynamic/${encodeURIComponent(config.accountId)}/generate-qr`,
@@ -186,23 +227,30 @@ export class SingaPayService {
           signal: AbortSignal.timeout(20_000),
         },
       );
-      responseBody = safeJsonParse(await response.text());
-    } catch {
-      await this.setAttemptState(keyId, merchantRef, 'needs_review', 'Respons QRIS tidak terkonfirmasi; jangan buat QR baru sebelum transaksi diperiksa.');
-      throw new ServiceUnavailableException('SingaPay belum mengonfirmasi pembuatan QRIS. Periksa status top-up sebelum mencoba lagi.');
+      responseText = await response.text();
+      responseBody = safeJsonParse(responseText);
+    } catch (error) {
+      const details = error instanceof Error ? safeDiagnosticText(`${error.name}: ${error.message}`) : 'unknown transport error';
+      this.logger.error(`QRIS generate request failed; reference=${diagnosticId}; target=${providerTarget}; details=${details}`);
+      await this.setAttemptState(keyId, merchantRef, 'needs_review', `Respons QRIS tidak terkonfirmasi; referensi log ${diagnosticId}.`);
+      throw new ServiceUnavailableException(`SingaPay belum mengonfirmasi pembuatan QRIS. Periksa status top-up sebelum mencoba lagi. Referensi log: ${diagnosticId}.`);
     }
 
     if (!response.ok) {
+      const providerDetails = providerErrorSummary(responseBody, responseText);
+      this.logger.error(`QRIS generate rejected; reference=${diagnosticId}; target=${providerTarget}; httpStatus=${response.status}; statusText=${safeDiagnosticText(response.statusText)}; contentType=${safeDiagnosticText(response.headers.get('content-type') ?? 'unknown')}; provider=${providerDetails}`);
       const status: TopUpStatus = response.status >= 500 ? 'needs_review' : 'failed';
-      await this.setAttemptState(keyId, merchantRef, status, `SingaPay menolak pembuatan QRIS (HTTP ${response.status}).`);
-      throw new ServiceUnavailableException(`SingaPay gagal membuat QRIS (HTTP ${response.status}).`);
+      await this.setAttemptState(keyId, merchantRef, status, `SingaPay menolak pembuatan QRIS (HTTP ${response.status}). Referensi log: ${diagnosticId}.`);
+      throw new ServiceUnavailableException(`SingaPay gagal membuat QRIS (HTTP ${response.status}). Referensi log: ${diagnosticId}.`);
     }
 
     const envelope = asRecord(responseBody);
     const providerData = asRecord(envelope?.data) as QrisResponse | null;
     if (envelope?.success !== true || !providerData?.qr_data) {
-      await this.setAttemptState(keyId, merchantRef, 'needs_review', 'Respons SingaPay tidak memuat data QR yang dapat diverifikasi.');
-      throw new ServiceUnavailableException('Respons SingaPay belum dapat dipastikan. Periksa status top-up sebelum mencoba lagi.');
+      const providerDetails = providerErrorSummary(responseBody, responseText);
+      this.logger.error(`QRIS generate returned an unusable response; reference=${diagnosticId}; target=${providerTarget}; httpStatus=${response.status}; provider=${providerDetails}`);
+      await this.setAttemptState(keyId, merchantRef, 'needs_review', `Respons SingaPay tidak memuat data QR yang dapat diverifikasi. Referensi log: ${diagnosticId}.`);
+      throw new ServiceUnavailableException(`Respons SingaPay belum dapat dipastikan. Periksa status top-up sebelum mencoba lagi. Referensi log: ${diagnosticId}.`);
     }
 
     await this.keys.updateOne(
