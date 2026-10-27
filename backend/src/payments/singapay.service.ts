@@ -790,6 +790,15 @@ export class SingaPayService {
         if (candidate?.merchant_reff_no === attempt.merchantRef) matches.push(candidate);
       }
       const pagination = asRecord(asRecord(envelope?.meta)?.pagination);
+      const emptyResultConfirmed = page === 1
+        && matches.length === 0
+        && rows.length === 0
+        && (pagination?.total === 0 || pagination?.total === '0')
+        && (pagination?.count === 0 || pagination?.count === '0');
+      if (emptyResultConfirmed) {
+        complete = true;
+        break;
+      }
       const reportedTotalPages = Number(pagination?.total_pages);
       if (!Number.isSafeInteger(reportedTotalPages) || reportedTotalPages < 1) break;
       totalPages = reportedTotalPages;
