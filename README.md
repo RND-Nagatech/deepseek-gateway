@@ -81,7 +81,13 @@ If payment creation fails upstream, the dashboard error includes a log reference
 
 ## Read balance and usage from another application
 
-The self-service API uses the same registered DeepSeek key as the proxy. It only returns data for the key sent with the request, even when its client has other keys. Send the registered key with the Authorization header using the Bearer scheme, or use the x-api-key header. Keep this key in a trusted server-side environment.
+The self-service API requires a separate **integration API key**. In **Client & key**, create one for the specific DeepSeek key that the client will top up. The dashboard shows the secret once; copy it directly to the consuming application's server-side secret manager. Only its HMAC hash and a masked hint are stored. Creating it again rotates the credential and immediately invalidates the previous one; revoking it leaves the DeepSeek proxy key and its balance intact. Revoking the DeepSeek key also revokes its integration credential.
+
+**Migration:** `/api/v1/me/*` now rejects the original DeepSeek API key. Existing consumers must create an integration API key in the dashboard and replace the credential configured in their backend. Requests to `/api/proxy/*` continue to use the original DeepSeek API key.
+
+This credential is restricted to the paired key's balance, usage, and top-up endpoints. It cannot be used as a DeepSeek key with `/api/proxy`. Keep it on a trusted server; browser JavaScript must call the client's own backend instead of receiving this secret.
+
+Authenticate with `Authorization: Bearer <INTEGRATION_API_KEY>` or the `X-Integration-Key` header. The OpenAPI security schemes document both options.
 
 - GET /api/v1/me/balance returns the current rupiah balance, latest top-up, and whether the key can make a request. A balance below Rp10 is blocked by the proxy; a later usage charge can make the balance negative.
 - POST /api/v1/me/topups creates a QRIS payment attempt. POST /api/v1/me/topups/va creates a temporary VA; send `amountIdr` (minimum 10,000) and a documented `bankCode`. Both require a unique `Idempotency-Key`, and neither credits balance before a verified callback.
@@ -91,24 +97,26 @@ The self-service API uses the same registered DeepSeek key as the proxy. It only
 - GET /api/v1/me/usage/summary returns request/status totals, token totals, cost, and a daily series. It defaults to the last 30 days.
 - GET /api/v1/me/usage returns individual request records. Use limit (up to 100), optional ISO 8601 from/to filters (to is exclusive), and the returned nextCursor to fetch more records.
 
-For example, set GATEWAY_URL to https://deepseek.nagatech.id and DEEPSEEK_API_KEY to the registered key, then call:
+For example, set `GATEWAY_URL` to `https://deepseek.nagatech.id` and `INTEGRATION_API_KEY` to the secret generated in **Client & key**, then call:
 
     curl "$GATEWAY_URL/api/v1/me/balance" \
-      -H "Authorization: Bearer $DEEPSEEK_API_KEY"
+      -H "Authorization: Bearer $INTEGRATION_API_KEY"
     curl "$GATEWAY_URL/api/v1/me/usage/summary" \
-      -H "Authorization: Bearer $DEEPSEEK_API_KEY"
+      -H "Authorization: Bearer $INTEGRATION_API_KEY"
     curl "$GATEWAY_URL/api/v1/me/topups" \
-      -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
-      -H 'Idempotency-Key: billing-cycle-2026-10' \
+      -H "Authorization: Bearer $INTEGRATION_API_KEY" \
+      -H 'Idempotency-Key: qris-attempt-20261027-001' \
       -H 'Content-Type: application/json' \
       -d '{"amountIdr":50000}'
     curl "$GATEWAY_URL/api/v1/me/topups/va" \
-      -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
-      -H 'Idempotency-Key: topup-va-2026-10' \
+      -H "Authorization: Bearer $INTEGRATION_API_KEY" \
+      -H 'Idempotency-Key: va-attempt-20261027-001' \
       -H 'Content-Type: application/json' \
       -d '{"amountIdr":50000,"bankCode":"BCA"}'
 
-For browser-based consumers, configure CORS_ORIGINS in backend/.env as a comma-separated list of trusted origins, for example https://dashboard.example.com. Server-to-server consumers do not need a CORS entry.
+The create response includes `merchantRef`, `status`, `expiresAt`, and method-specific details: render the `qrData` string as a QR image, or show `bankName`, `bankCode`, `vaNumber`, and the exact amount. A created payment is not a credited balance. Poll `GET /api/v1/me/topups/{merchantRef}` or call `POST /api/v1/me/topups/{merchantRef}/reconcile` if the callback is delayed, then refresh `/api/v1/me/balance` after status becomes `paid`.
+
+Use the same `Idempotency-Key` when repeating a create request after a timeout. Before creating a new attempt, inspect `/api/v1/me/topups/active`; do not issue a replacement while the previous payment may still be payable. The `/retry` operation performs SingaPay checks and blocks ambiguous or incomplete lookups. Full limits, bank codes, response schemas, and error codes are in [openapi.yaml](openapi.yaml).
 
 ## Pricing
 

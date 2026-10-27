@@ -1,7 +1,9 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  Header,
   Headers,
   Param,
   Patch,
@@ -121,6 +123,17 @@ export class ClientsController {
   @Patch(':id/keys/:keyId/revoke')
   revokeKey(@Param('id') id: string, @Param('keyId') keyId: string) {
     return this.clients.revokeKey(id, keyId);
+  }
+
+  @Post(':id/keys/:keyId/integration-api-key')
+  @Header('Cache-Control', 'no-store')
+  createIntegrationApiKey(@Param('id') id: string, @Param('keyId') keyId: string) {
+    return this.clients.createIntegrationApiKey(id, keyId);
+  }
+
+  @Delete(':id/keys/:keyId/integration-api-key')
+  revokeIntegrationApiKey(@Param('id') id: string, @Param('keyId') keyId: string) {
+    return this.clients.revokeIntegrationApiKey(id, keyId);
   }
 
   @Post(':id/keys/:keyId/topups')

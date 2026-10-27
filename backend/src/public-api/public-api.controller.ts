@@ -6,7 +6,7 @@ import { MINIMUM_BALANCE_IDR, MINIMUM_BALANCE_MICROS_IDR } from '../clients/bala
 import { microsIdrToRupiah } from '../pricing/token-usage';
 import { UsageService } from '../usage/usage.service';
 import { SingaPayService, SINGAPAY_VA_BANK_CODES, type SingaPayVaBankCode } from '../payments/singapay.service';
-import { GatewayApiKeyGuard, GatewayApiRequest } from './api-key.guard';
+import { IntegrationApiKeyGuard, IntegrationApiRequest } from './api-key.guard';
 
 class UsageListQueryDto {
   @IsOptional()
@@ -93,7 +93,7 @@ function toDateRange(query: { from?: string; to?: string }) {
 }
 
 @Controller('api/v1/me')
-@UseGuards(GatewayApiKeyGuard)
+@UseGuards(IntegrationApiKeyGuard)
 export class PublicApiController {
   constructor(
     private readonly usage: UsageService,
@@ -101,8 +101,8 @@ export class PublicApiController {
   ) {}
 
   @Get('balance')
-  balance(@Req() request: GatewayApiRequest) {
-    const identity = request.gatewayApiIdentity!;
+  balance(@Req() request: IntegrationApiRequest) {
+    const identity = request.integrationApiIdentity!;
     const balanceMicrosIdr = identity.key.balanceMicrosIdr?.toString() ?? '0';
     const topUps = identity.key.topUps ?? [];
     const balanceIdr = microsIdrToRupiah(balanceMicrosIdr);
@@ -129,28 +129,28 @@ export class PublicApiController {
   }
 
   @Get('usage')
-  listUsage(@Req() request: GatewayApiRequest, @Query() query: UsageListQueryDto) {
+  listUsage(@Req() request: IntegrationApiRequest, @Query() query: UsageListQueryDto) {
     return this.usage.listForKey(
-      request.gatewayApiIdentity!.key._id as Types.ObjectId,
+      request.integrationApiIdentity!.key._id as Types.ObjectId,
       { ...toDateRange(query), limit: query.limit, cursor: query.cursor },
     );
   }
 
   @Get('usage/summary')
-  usageSummary(@Req() request: GatewayApiRequest, @Query() query: UsageSummaryQueryDto) {
+  usageSummary(@Req() request: IntegrationApiRequest, @Query() query: UsageSummaryQueryDto) {
     return this.usage.summaryForKey(
-      request.gatewayApiIdentity!.key._id as Types.ObjectId,
+      request.integrationApiIdentity!.key._id as Types.ObjectId,
       { ...toDateRange(query), defaultDays: 30 },
     );
   }
 
   @Post('topups')
   createTopUp(
-    @Req() request: GatewayApiRequest,
+    @Req() request: IntegrationApiRequest,
     @Body() dto: CreateTopUpDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    const identity = request.gatewayApiIdentity!;
+    const identity = request.integrationApiIdentity!;
     return this.singaPay.createQrisTopUp(
       identity.key._id as Types.ObjectId,
       dto.amountIdr,
@@ -161,11 +161,11 @@ export class PublicApiController {
 
   @Post('topups/va')
   createVaTopUp(
-    @Req() request: GatewayApiRequest,
+    @Req() request: IntegrationApiRequest,
     @Body() dto: CreateVaTopUpDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    const identity = request.gatewayApiIdentity!;
+    const identity = request.integrationApiIdentity!;
     return this.singaPay.createVaTopUp(
       identity.key._id as Types.ObjectId,
       dto.amountIdr,
@@ -176,13 +176,13 @@ export class PublicApiController {
   }
 
   @Get('topups')
-  listTopUps(@Req() request: GatewayApiRequest, @Query() query: TopUpListQueryDto) {
-    return this.singaPay.listTopUps(request.gatewayApiIdentity!.key._id as Types.ObjectId, query.limit);
+  listTopUps(@Req() request: IntegrationApiRequest, @Query() query: TopUpListQueryDto) {
+    return this.singaPay.listTopUps(request.integrationApiIdentity!.key._id as Types.ObjectId, query.limit);
   }
 
   @Get('topups/active')
-  activeTopUp(@Req() request: GatewayApiRequest) {
-    const identity = request.gatewayApiIdentity!;
+  activeTopUp(@Req() request: IntegrationApiRequest) {
+    const identity = request.integrationApiIdentity!;
     return this.singaPay.getActiveTopUp(
       identity.key._id as Types.ObjectId,
       identity.client._id as Types.ObjectId,
@@ -190,13 +190,13 @@ export class PublicApiController {
   }
 
   @Get('topups/:merchantRef')
-  getTopUp(@Req() request: GatewayApiRequest, @Param('merchantRef') merchantRef: string) {
-    return this.singaPay.getTopUp(request.gatewayApiIdentity!.key._id as Types.ObjectId, merchantRef);
+  getTopUp(@Req() request: IntegrationApiRequest, @Param('merchantRef') merchantRef: string) {
+    return this.singaPay.getTopUp(request.integrationApiIdentity!.key._id as Types.ObjectId, merchantRef);
   }
 
   @Post('topups/:merchantRef/reconcile')
-  reconcileTopUp(@Req() request: GatewayApiRequest, @Param('merchantRef') merchantRef: string) {
-    const identity = request.gatewayApiIdentity!;
+  reconcileTopUp(@Req() request: IntegrationApiRequest, @Param('merchantRef') merchantRef: string) {
+    const identity = request.integrationApiIdentity!;
     return this.singaPay.reconcileTopUp(
       identity.key._id as Types.ObjectId,
       merchantRef,
@@ -206,12 +206,12 @@ export class PublicApiController {
 
   @Post('topups/:merchantRef/retry')
   retryTopUp(
-    @Req() request: GatewayApiRequest,
+    @Req() request: IntegrationApiRequest,
     @Param('merchantRef') merchantRef: string,
     @Body() dto: RetryTopUpDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    const identity = request.gatewayApiIdentity!;
+    const identity = request.integrationApiIdentity!;
     return this.singaPay.retryTopUp(
       identity.key._id as Types.ObjectId,
       merchantRef,

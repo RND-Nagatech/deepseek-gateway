@@ -9,13 +9,13 @@ import { FastifyRequest } from 'fastify';
 import { ClientDocument, ClientKeyDocument } from '../common/schemas';
 import { ClientsService } from '../clients/clients.service';
 
-export interface GatewayApiIdentity {
+export interface IntegrationApiIdentity {
   client: ClientDocument;
   key: ClientKeyDocument;
 }
 
-export type GatewayApiRequest = FastifyRequest & {
-  gatewayApiIdentity?: GatewayApiIdentity;
+export type IntegrationApiRequest = FastifyRequest & {
+  integrationApiIdentity?: IntegrationApiIdentity;
 };
 
 function firstHeader(value: string | string[] | undefined): string | undefined {
@@ -23,25 +23,25 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
 }
 
 @Injectable()
-export class GatewayApiKeyGuard implements CanActivate {
+export class IntegrationApiKeyGuard implements CanActivate {
   constructor(private readonly clients: ClientsService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest<GatewayApiRequest>();
+    const request = context.switchToHttp().getRequest<IntegrationApiRequest>();
     const authorization = firstHeader(request.headers.authorization);
-    const headerKey = firstHeader(request.headers['x-api-key']);
+    const headerKey = firstHeader(request.headers['x-integration-key']);
     const rawKey = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? headerKey?.trim();
-    if (!rawKey) throw new UnauthorizedException('A registered DeepSeek API key is required.');
+    if (!rawKey) throw new UnauthorizedException('A separate integration API key is required.');
 
-    let identity: Awaited<ReturnType<ClientsService['findActiveKey']>>;
+    let identity: Awaited<ReturnType<ClientsService['findActiveIntegrationKey']>>;
     try {
-      identity = await this.clients.findActiveKey(rawKey);
+      identity = await this.clients.findActiveIntegrationKey(rawKey);
     } catch {
       throw new ServiceUnavailableException('The monitoring database is unavailable.');
     }
-    if (!identity) throw new UnauthorizedException('This DeepSeek API key is not registered or is inactive.');
+    if (!identity) throw new UnauthorizedException('This integration API key is invalid, revoked, or inactive.');
 
-    request.gatewayApiIdentity = identity;
+    request.integrationApiIdentity = identity;
     return true;
   }
 }

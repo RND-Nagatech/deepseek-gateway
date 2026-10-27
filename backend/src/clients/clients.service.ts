@@ -1,6 +1,6 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { createHmac } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { Model, Types } from 'mongoose';
 import { Client, ClientKey, ClientDocument, ClientKeyDocument } from '../common/schemas';
 import { microsIdrToRupiah } from '../pricing/token-usage';
@@ -91,7 +91,7 @@ export class ClientsService {
 
   async list() {
     const clients = await this.clients.find().sort({ createdAt: -1 }).lean().exec();
-    const keys = await this.keys.find().select('-keyHash').lean().exec();
+    const keys = await this.keys.find().select('-keyHash -integrationApiKeyHash').lean().exec();
     const usageByClient = await this.aggregateClientTotals();
     const totals = new Map(usageByClient.map((item) => [String(item._id), item]));
     const keysByClient = new Map<string, typeof keys>();
@@ -117,9 +117,14 @@ export class ClientsService {
           status: key.status,
           lastUsedAt: key.lastUsedAt,
           createdAt: key.createdAt,
-            balanceIdr: microsIdrToRupiah(key.balanceMicrosIdr),
-            topUpCount: key.topUps?.length ?? 0,
-              lastTopUp: key.topUps?.at(-1) ? this.topUpSummary(key.topUps.at(-1)!) : null,
+          integrationCredential: key.integrationApiKeyHint ? {
+            hint: key.integrationApiKeyHint,
+            createdAt: key.integrationApiKeyCreatedAt?.toISOString() ?? null,
+            lastUsedAt: key.integrationApiKeyLastUsedAt?.toISOString() ?? null,
+          } : null,
+          balanceIdr: microsIdrToRupiah(key.balanceMicrosIdr),
+          topUpCount: key.topUps?.length ?? 0,
+          lastTopUp: key.topUps?.at(-1) ? this.topUpSummary(key.topUps.at(-1)!) : null,
         })),
       };
     });
@@ -144,14 +149,70 @@ export class ClientsService {
   async revokeKey(clientId: string, keyId: string) {
     const key = await this.keys.findOneAndUpdate(
       { _id: keyId, clientId },
-      { $set: { status: 'revoked' } },
+      {
+        $set: { status: 'revoked' },
+        $unset: {
+          integrationApiKeyHash: '',
+          integrationApiKeyHint: '',
+          integrationApiKeyCreatedAt: '',
+          integrationApiKeyLastUsedAt: '',
+        },
+      },
       { new: true },
     ).lean().exec();
     if (!key) throw new NotFoundException('API key not found.');
     return { id: String(key._id), status: key.status };
   }
 
-    async topUpKey(clientId: string, keyId: string, amountIdr: number, reason = 'Penyesuaian manual oleh admin') {
+  async createIntegrationApiKey(clientId: string, keyId: string) {
+    const client = await this.clients.exists({ _id: clientId, status: 'active' });
+    if (!client) throw new NotFoundException('Client not found or inactive.');
+
+    const rawKey = `dsm_int_${randomBytes(32).toString('base64url')}`;
+    const createdAt = new Date();
+    const hint = `${rawKey.slice(0, 12)}…${rawKey.slice(-4)}`;
+    const key = await this.keys.findOneAndUpdate(
+      { _id: keyId, clientId, status: 'active' },
+      {
+        $set: {
+          integrationApiKeyHash: this.hashKey(rawKey),
+          integrationApiKeyHint: hint,
+          integrationApiKeyCreatedAt: createdAt,
+          integrationApiKeyLastUsedAt: null,
+        },
+      },
+      { new: true },
+    ).lean().exec();
+    if (!key) {
+      if (!(await this.keys.exists({ _id: keyId, clientId }))) throw new NotFoundException('API key not found.');
+      throw new ConflictException('An integration API key can only be issued for an active DeepSeek key.');
+    }
+
+    return {
+      keyId: String(key._id),
+      keyHint: key.keyHint,
+      integrationApiKey: rawKey,
+      integrationCredential: { hint, createdAt: createdAt.toISOString(), lastUsedAt: null },
+    };
+  }
+
+  async revokeIntegrationApiKey(clientId: string, keyId: string) {
+    const result = await this.keys.updateOne(
+      { _id: keyId, clientId },
+      {
+        $unset: {
+          integrationApiKeyHash: '',
+          integrationApiKeyHint: '',
+          integrationApiKeyCreatedAt: '',
+          integrationApiKeyLastUsedAt: '',
+        },
+      },
+    ).exec();
+    if (result.matchedCount !== 1) throw new NotFoundException('API key not found.');
+    return { keyId, revoked: true };
+  }
+
+  async topUpKey(clientId: string, keyId: string, amountIdr: number, reason = 'Penyesuaian manual oleh admin') {
     const createdAt = new Date();
     const increment = Types.Decimal128.fromString(rupiahToMicroIdr(amountIdr));
     const key = await this.keys.findOneAndUpdate(
@@ -196,6 +257,22 @@ export class ClientsService {
     if (!key) return null;
     const client = await this.clients.findOne({ _id: key.clientId, status: 'active' }).exec();
     if (!client) return null;
+    return { key, client };
+  }
+
+  async findActiveIntegrationKey(rawKey: string) {
+    const normalizedKey = rawKey.trim();
+    if (!/^dsm_int_[A-Za-z0-9_-]{43}$/.test(normalizedKey)) return null;
+    const integrationApiKeyHash = this.hashKey(normalizedKey);
+    const key = await this.keys.findOne({ integrationApiKeyHash, status: 'active' }).exec();
+    if (!key) return null;
+    const client = await this.clients.findOne({ _id: key.clientId, status: 'active' }).exec();
+    if (!client) return null;
+    const touch = await this.keys.updateOne(
+      { _id: key._id, status: 'active', integrationApiKeyHash },
+      { $set: { integrationApiKeyLastUsedAt: new Date() } },
+    ).exec();
+    if (touch.matchedCount !== 1) return null;
     return { key, client };
   }
 

@@ -23,7 +23,7 @@ async function bootstrap() {
       'http://127.0.0.1:5173', 'http://localhost:5173',
     ],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['content-type', 'authorization', 'x-admin-token', 'x-api-key', 'idempotency-key'],
+    allowedHeaders: ['content-type', 'authorization', 'x-admin-token', 'x-api-key', 'x-integration-key', 'idempotency-key'],
   });
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
   await app.init();

@@ -56,6 +56,18 @@ export class ClientKey {
   @Prop({ required: true })
   keyHint!: string;
 
+  @Prop({ type: String, select: false })
+  integrationApiKeyHash?: string;
+
+  @Prop({ type: String, default: null })
+  integrationApiKeyHint?: string | null;
+
+  @Prop({ type: Date, default: null })
+  integrationApiKeyCreatedAt?: Date | null;
+
+  @Prop({ type: Date, default: null })
+  integrationApiKeyLastUsedAt?: Date | null;
+
   @Prop({ default: 'active', enum: ['active', 'revoked'] })
   status!: 'active' | 'revoked';
 
@@ -98,6 +110,7 @@ export class ClientKey {
 
 export const ClientKeySchema = SchemaFactory.createForClass(ClientKey);
 ClientKeySchema.index({ 'topUps.merchantRef': 1 });
+ClientKeySchema.index({ integrationApiKeyHash: 1 }, { unique: true, sparse: true });
 
 @Schema({ timestamps: true, collection: 'usage_events' })
 export class UsageEvent {

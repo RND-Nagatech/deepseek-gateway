@@ -89,6 +89,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .button-primary { color: #fff; border-color: #334a40; background: #334a40; }
 .button-primary:hover:not(:disabled) { border-color: #263b32; background: #263b32; }
 .button-primary svg { color: #e7bd78; }
+.button-danger { color: #fff; border-color: #99493f; background: #99493f; }
+.button-danger:hover:not(:disabled) { border-color: #7e382f; background: #7e382f; }
 .button-quiet { color: #52625b; border-color: var(--control-edge); background: #fff; }
 .button-quiet:hover { border-color: #b8c5bd; background: #f3f6f3; }
 .button-small { min-height: 31px; padding: 0 10px; font-size: 11px; }
@@ -219,7 +221,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .key-list-head > div { display: grid; gap: 2px; }
 .key-list-head strong { color: #475950; font-size: 11px; font-weight: 600; }
 .key-list-head span { color: var(--muted); font-size: 10px; }
-.key-row { min-height: 47px; display: grid; grid-template-columns: 20px minmax(120px, 1fr) minmax(145px, .8fr) auto minmax(210px, auto); align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid #e7ece8; }
+.key-record { padding-bottom: 10px; border-bottom: 1px solid #e7ece8; }
+.key-row { min-height: 47px; display: grid; grid-template-columns: 20px minmax(120px, 1fr) minmax(145px, .8fr) auto minmax(210px, auto); align-items: center; gap: 10px; padding: 7px 0; }
 .key-row-icon { color: #52635a; }
 .key-row code { color: #586b61; font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; font-variant-numeric: tabular-nums; }
 .key-row-identity, .key-balance { min-width: 0; display: grid; gap: 3px; }
@@ -231,6 +234,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .key-manual, .key-revoke { white-space: nowrap; }
 .key-manual { color: #5f6d66; font-size: 10px; }
 .key-last-used { color: var(--muted); font-size: 10px; }
+.integration-key-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 2px 0 0 30px; padding-top: 9px; border-top: 1px solid #e9eeea; }
+.integration-key-copy { min-width: 0; display: grid; gap: 3px; }
+.integration-key-copy > span { overflow-wrap: anywhere; color: #52635a; font-size: 10px; font-weight: 500; }
+.integration-key-copy > small { color: var(--muted); font-size: 9px; line-height: 1.45; }
+.integration-key-actions { display: flex; align-items: center; justify-content: flex-end; flex: 0 0 auto; flex-wrap: wrap; gap: 10px; }
+.integration-key-actions .text-button { white-space: nowrap; font-size: 10px; }
 .client-tools { display: flex; gap: 17px; padding-top: 11px; }
 .no-keys { color: var(--muted); font-size: 11px; }
 .page-footnote { display: flex; align-items: flex-start; gap: 8px; margin: 16px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
@@ -282,6 +291,20 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .modal-backdrop { position: fixed; z-index: 10; inset: 0; background-color: transparent; }
 .modal-panel { position: fixed; z-index: 11; inset: 0; width: calc(100% - 40px); max-width: 520px; height: fit-content; max-height: calc(100vh - 40px); max-height: calc(100dvh - 40px); overflow-y: auto; overscroll-behavior: contain; margin: auto; padding: 21px; border: 1px solid #dfe6e1; border-radius: 14px; background: #fbfcfa; box-shadow: 0 20px 60px rgba(22, 41, 32, .2); }
 .payment-success-modal { max-width: 390px; padding: 0; overflow: hidden; }
+.integration-key-created-modal { max-width: 470px; padding: 0; overflow: hidden; }
+.integration-credential-content { position: relative; display: grid; justify-items: start; gap: 13px; padding: 29px; }
+.integration-key-close { position: absolute; top: 16px; right: 16px; }
+.integration-credential-mark { width: 43px; height: 43px; display: grid; place-items: center; border: 1px solid #e7d1ad; border-radius: 12px; color: #9a672e; background: #fbf4e9; }
+.integration-credential-kicker { color: #8d704c; font-size: 9px; font-weight: 600; letter-spacing: .12em; }
+.integration-credential-content h2 { margin: 0; color: #35493f; font-size: 20px; font-weight: 600; }
+.integration-credential-content > p { margin: -5px 0 1px; color: #596b60; font-size: 11px; line-height: 1.55; }
+.integration-credential-content > p code { color: #435d4e; font-size: 10px; }
+.integration-secret-field { width: 100%; display: grid; gap: 7px; color: #4d5d54; font-size: 10px; font-weight: 600; }
+.integration-secret-field input { width: 100%; min-width: 0; padding: 11px 12px; border: 1px solid #cad6cf; border-radius: 8px; color: #35493f; background: #f3f7f3; font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; user-select: all; }
+.integration-secret-field input:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.integration-credential-content > .button { width: 100%; }
+.integration-copy-message { color: #4e745e; font-size: 10px; }
+.integration-credential-content .key-handling-note { margin: 0; }
 .payment-success-content { position: relative; display: grid; justify-items: center; gap: 11px; padding: 30px 26px 25px; text-align: center; }
 .payment-success-close { position: absolute; top: 12px; right: 12px; }
 .payment-success-art { width: 136px; height: 136px; margin: 3px 0 0; }
@@ -463,6 +486,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   .key-topup { grid-column: auto; grid-row: auto; justify-self: auto; }
   .key-revoke { grid-column: auto; grid-row: auto; justify-self: auto; }
   .key-balance small { white-space: normal; }
+  .integration-key-row { align-items: flex-start; flex-direction: column; margin-left: 28px; }
+  .integration-key-actions { justify-content: flex-start; }
   .usage-toolbar { flex-wrap: wrap; padding: 10px; }
   .search-field { width: 100%; }
   .usage-toolbar .select-wrap { flex: 1; }
@@ -481,6 +506,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   .line-two { top: 29px; right: 11%; }
   .line-three { bottom: 15px; right: 18%; }
   .modal-panel { padding: 17px; }
+  .integration-key-created-modal { padding: 0; }
+  .integration-credential-content { gap: 11px; padding: 24px 19px 19px; }
+  .integration-key-close { top: 11px; right: 11px; }
+  .integration-secret-field input { font-size: 10px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

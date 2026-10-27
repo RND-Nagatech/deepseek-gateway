@@ -36,6 +36,9 @@ type ModalState =
   | { mode: 'top-up'; client: Client; key: Client['keys'][number] }
   | { mode: 'top-up-success'; amountIdr: number; clientName: string; keyHint: string }
   | { mode: 'manual-top-up'; client: Client; key: Client['keys'][number] }
+  | { mode: 'integration-key-confirm'; client: Client; key: Client['keys'][number]; rotating: boolean }
+  | { mode: 'revoke-integration-key'; client: Client; key: Client['keys'][number] }
+  | { mode: 'integration-key-created'; clientName: string; keyHint: string; secret: string }
   | null;
 
 const activeTopUpStatuses: TopUpStatus[] = ['creating', 'pending', 'needs_review'];
@@ -389,6 +392,22 @@ export function App() {
       } else if (currentModal.mode === 'revoke-key') {
         await apiRequest(`/clients/${currentModal.client.id}/keys/${currentModal.keyId}/revoke`, adminToken, { method: 'PATCH' });
         flash('API key dicabut.');
+      } else if (currentModal.mode === 'integration-key-confirm') {
+        const credential = await apiRequest<{
+          integrationApiKey: string;
+          integrationCredential: NonNullable<Client['keys'][number]['integrationCredential']>;
+        }>(`/clients/${currentModal.client.id}/keys/${currentModal.key.id}/integration-api-key`, adminToken, { method: 'POST' });
+        setModal({
+          mode: 'integration-key-created',
+          clientName: currentModal.client.name,
+          keyHint: currentModal.key.keyHint,
+          secret: credential.integrationApiKey,
+        });
+        void refreshAll().catch(() => setPageError('Credential dibuat, tetapi status key belum dapat dimuat ulang.'));
+        return;
+      } else if (currentModal.mode === 'revoke-integration-key') {
+        await apiRequest(`/clients/${currentModal.client.id}/keys/${currentModal.key.id}/integration-api-key`, adminToken, { method: 'DELETE' });
+        flash(`API integrasi untuk ${currentModal.key.keyHint} dicabut.`);
       } else if (currentModal.mode === 'top-up') {
         const amountIdr = Number(topUpAmount);
         const isVa = topUpMethod === 'va';
@@ -501,6 +520,14 @@ export function App() {
     openModal({ mode: 'revoke-key', client, keyId });
   }
 
+  function manageIntegrationKey(client: Client, key: Client['keys'][number]) {
+    openModal({ mode: 'integration-key-confirm', client, key, rotating: Boolean(key.integrationCredential) });
+  }
+
+  function revokeIntegrationKey(client: Client, key: Client['keys'][number]) {
+    openModal({ mode: 'revoke-integration-key', client, key });
+  }
+
   async function savePricing(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const pricePerMillionIdr = Number(priceInput);
@@ -560,6 +587,10 @@ export function App() {
         ? 'Ubah nama client'
         : modal?.mode === 'revoke-key'
           ? 'Cabut API key'
+          : modal?.mode === 'integration-key-confirm'
+            ? modal.rotating ? 'Rotasi API integrasi' : 'Buat API integrasi'
+            : modal?.mode === 'revoke-integration-key'
+              ? 'Cabut API integrasi'
           : modal?.mode === 'manual-top-up'
             ? 'Penyesuaian saldo'
             : modal?.mode === 'top-up-success'
@@ -573,6 +604,10 @@ export function App() {
         ? 'Gunakan nama yang mudah dikenali di riwayat penggunaan.'
         : modal?.mode === 'revoke-key'
           ? `Cabut key milik ${modal.client.name}. Request berikutnya dengan key ini akan ditolak.`
+          : modal?.mode === 'integration-key-confirm'
+            ? `${modal.rotating ? 'Credential lama akan langsung berhenti berlaku. ' : ''}Buat credential server-to-server untuk key ${modal.key.keyHint} milik ${modal.client.name}.`
+            : modal?.mode === 'revoke-integration-key'
+              ? `Cabut akses API untuk ${modal.key.keyHint}. Key DeepSeek tetap dapat dipakai melalui gateway.`
           : modal?.mode === 'top-up'
             ? `Pilih metode pembayaran untuk key ${modal.key.keyHint} milik ${modal.client.name}. Saldo masuk setelah SingaPay mengonfirmasi pembayaran.`
             : modal?.mode === 'top-up-success'
@@ -651,6 +686,8 @@ export function App() {
               onRename={(client) => void renameClient(client)}
               onToggle={(client) => void toggleClient(client)}
               onRevoke={(client, keyId) => void revokeKey(client, keyId)}
+              onManageIntegrationKey={manageIntegrationKey}
+              onRevokeIntegrationKey={revokeIntegrationKey}
               expanded={expandedClient}
               onExpand={(id) => setExpandedClient(expandedClient === id ? null : id)}
             />
@@ -682,7 +719,7 @@ export function App() {
       <AnimatedModalLayer
         open={Boolean(modal)}
         modalKey={modal?.mode ?? ''}
-        className={`modal-panel ${modal?.mode === 'top-up-success' ? 'payment-success-modal' : ''}`}
+        className={`modal-panel ${modal?.mode === 'top-up-success' ? 'payment-success-modal' : ''} ${modal?.mode === 'integration-key-created' ? 'integration-key-created-modal' : ''}`}
         dialogRef={dialogRef}
         onBackdropMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}
         onCloseComplete={restoreModalFocus}
@@ -695,10 +732,17 @@ export function App() {
             keyHint={modal.keyHint}
             onClose={closeModal}
           />
+        ) : modal?.mode === 'integration-key-created' ? (
+          <IntegrationCredentialDialog
+            clientName={modal.clientName}
+            keyHint={modal.keyHint}
+            secret={modal.secret}
+            onClose={closeModal}
+          />
         ) : modal && <>
             <div className="modal-head">
               <div><span className="modal-mark"><Icon name={modal.mode === 'rename-client' ? 'clients' : modal.mode === 'top-up' || modal.mode === 'manual-top-up' ? 'wallet' : 'key'} size={18} /></span><div><h2 id="client-modal-title">{modalTitle}</h2><p id="client-modal-description">{modalDescription}</p></div></div>
-              <button className="icon-button" type="button" aria-label="Tutup" autoFocus={modal.mode === 'revoke-key'} onClick={closeModal}><Icon name="close" size={18} /></button>
+              <button className="icon-button" type="button" aria-label="Tutup" autoFocus={modal.mode === 'revoke-key' || modal.mode === 'revoke-integration-key'} onClick={closeModal}><Icon name="close" size={18} /></button>
             </div>
             <form className="modal-form" onSubmit={(event) => void submitClient(event)}>
               {modal.mode === 'top-up' && topUpError && <div className="notice notice-error topup-error" role="alert"><Icon name="warning" size={16} /><span>{topUpError}</span><button type="button" onClick={() => setTopUpError('')} aria-label="Tutup pesan"><Icon name="close" size={15} /></button></div>}
@@ -737,11 +781,13 @@ export function App() {
               {modal.mode === 'manual-top-up' && <label>Alasan penyesuaian<input autoFocus maxLength={160} required value={manualTopUpReason} onChange={(event) => setManualTopUpReason(event.target.value)} placeholder="Contoh: koreksi pembayaran transfer" /></label>}
               {modalNeedsKey && <div className="key-handling-note"><Icon name="warning" size={15} /><span>Key dipakai untuk mencocokkan request lalu diteruskan ke DeepSeek. Sistem hanya menyimpan fingerprint, bukan nilai key.</span></div>}
               {modal.mode === 'revoke-key' && <div className="key-handling-note revoke-note"><Icon name="warning" size={15} /><span>Key akan langsung ditolak oleh gateway setelah dicabut.</span></div>}
+              {modal.mode === 'integration-key-confirm' && <div className="key-handling-note"><Icon name="key" size={15} /><span>Token ini terpisah dari key DeepSeek dan hanya dapat mengakses saldo, usage, dan top-up key ini. Secret ditampilkan satu kali. {modal.rotating ? 'Rotasi langsung membatalkan token lama.' : 'Simpan token di secret manager server client.'}</span></div>}
+              {modal.mode === 'revoke-integration-key' && <div className="key-handling-note revoke-note"><Icon name="warning" size={15} /><span>Credential integrasi langsung tidak berlaku. Key DeepSeek dan saldo tidak berubah.</span></div>}
               {modal.mode === 'top-up' && !existingTopUpLoading && <div className="key-handling-note"><Icon name="wallet" size={15} /><span>{topUpMethod === 'va' ? 'Nomor VA berlaku sekitar satu jam dan hanya menerima satu pembayaran dengan nominal tepat.' : 'QRIS aktif selama sekitar satu jam.'} Saldo minimal Rp10 untuk memulai request; biaya aktual tetap dapat membuat saldo minus.</span></div>}
               {modal.mode === 'manual-top-up' && <div className="key-handling-note"><Icon name="warning" size={15} /><span>Penyesuaian langsung masuk ke saldo key dan tercatat bersama alasannya.</span></div>}
               <div className="modal-actions">
                 {modal.mode === 'top-up' ? <button className="button button-quiet" type="button" onClick={closeModal}>Tutup</button> : <button className="button button-quiet" type="button" onClick={closeModal}>Batal</button>}
-                {modal.mode !== 'top-up' || canSubmitTopUp ? <button className="button button-primary" type="submit" disabled={loading || (modal.mode === 'new-client' && (!clientName.trim() || !apiKey.trim())) || (modal.mode === 'add-key' && !apiKey.trim()) || (modal.mode === 'rename-client' && !clientName.trim()) || ((modal.mode === 'top-up' || modal.mode === 'manual-top-up') && (!Number.isSafeInteger(Number(topUpAmount)) || Number(topUpAmount) < topUpMinimum || Number(topUpAmount) > 1_000_000_000)) || (modal.mode === 'manual-top-up' && !manualTopUpReason.trim())}>{loading ? modal.mode === 'top-up' ? canSafelyReplaceTopUp(topUpPayment) ? 'Memeriksa pembayaran…' : topUpMethod === 'va' ? 'Membuat VA…' : 'Membuat QRIS…' : 'Menyimpan…' : modal.mode === 'new-client' ? 'Simpan client' : modal.mode === 'add-key' ? 'Tambahkan key' : modal.mode === 'rename-client' ? 'Simpan nama' : modal.mode === 'revoke-key' ? 'Cabut key' : modal.mode === 'manual-top-up' ? 'Catat penyesuaian' : canSafelyReplaceTopUp(topUpPayment) ? `Periksa & buat ${topUpMethod === 'va' ? 'Virtual Account' : 'QRIS'}` : topUpMethod === 'va' ? 'Buat Virtual Account' : 'Buat QRIS'}</button> : null}
+                {modal.mode !== 'top-up' || canSubmitTopUp ? <button className={`button button-primary ${modal.mode === 'revoke-integration-key' ? 'button-danger' : ''}`} type="submit" disabled={loading || (modal.mode === 'new-client' && (!clientName.trim() || !apiKey.trim())) || (modal.mode === 'add-key' && !apiKey.trim()) || (modal.mode === 'rename-client' && !clientName.trim()) || ((modal.mode === 'top-up' || modal.mode === 'manual-top-up') && (!Number.isSafeInteger(Number(topUpAmount)) || Number(topUpAmount) < topUpMinimum || Number(topUpAmount) > 1_000_000_000)) || (modal.mode === 'manual-top-up' && !manualTopUpReason.trim())}>{loading ? modal.mode === 'top-up' ? canSafelyReplaceTopUp(topUpPayment) ? 'Memeriksa pembayaran…' : topUpMethod === 'va' ? 'Membuat VA…' : 'Membuat QRIS…' : 'Menyimpan…' : modal.mode === 'new-client' ? 'Simpan client' : modal.mode === 'add-key' ? 'Tambahkan key' : modal.mode === 'rename-client' ? 'Simpan nama' : modal.mode === 'revoke-key' ? 'Cabut key' : modal.mode === 'integration-key-confirm' ? modal.rotating ? 'Rotasi key integrasi' : 'Buat key integrasi' : modal.mode === 'revoke-integration-key' ? 'Cabut akses' : modal.mode === 'manual-top-up' ? 'Catat penyesuaian' : canSafelyReplaceTopUp(topUpPayment) ? `Periksa & buat ${topUpMethod === 'va' ? 'Virtual Account' : 'QRIS'}` : topUpMethod === 'va' ? 'Buat Virtual Account' : 'Buat QRIS'}</button> : null}
               </div>
             </form>
           </>}
@@ -870,6 +916,8 @@ function ClientsPage({
   onRename,
   onToggle,
   onRevoke,
+  onManageIntegrationKey,
+  onRevokeIntegrationKey,
   expanded,
   onExpand,
 }: {
@@ -881,6 +929,8 @@ function ClientsPage({
   onRename: (client: Client) => void;
   onToggle: (client: Client) => void;
   onRevoke: (client: Client, keyId: string) => void;
+  onManageIntegrationKey: (client: Client, key: Client['keys'][number]) => void;
+  onRevokeIntegrationKey: (client: Client, key: Client['keys'][number]) => void;
   expanded: string | null;
   onExpand: (id: string) => void;
 }) {
@@ -912,15 +962,27 @@ function ClientsPage({
                         ? 'Siap dipakai'
                         : 'Di bawah Rp10';
                 return (
-                  <div className="key-row" key={key.id}>
-                    <span className="key-row-icon"><Icon name="key" size={16} /></span>
-                    <div className="key-row-identity"><code>{key.keyHint}</code><small>Terakhir dipakai {formatDate(key.lastUsedAt)}</small></div>
-                    <div className="key-balance"><span>Saldo key</span><strong>{formatRupiahBalance(key.balanceIdr)}</strong>{key.lastTopUp && <small>{key.lastTopUp.source === 'singapay' && key.lastTopUp.status === 'pending' ? `${key.lastTopUp.method === 'va' ? 'VA' : 'QRIS'} menunggu` : key.lastTopUp.source === 'singapay' && key.lastTopUp.status === 'needs_review' ? `${key.lastTopUp.method === 'va' ? 'VA' : 'QRIS'} perlu ditinjau` : 'Top-up'} {formatRupiah(key.lastTopUp.amountIdr)} · {formatDate(key.lastTopUp.createdAt, false)}</small>}</div>
-                    <span className={`state ${key.status === 'revoked' ? 'state-neutral' : hasBalance ? 'state-success' : 'state-warning'}`}><i />{keyLabel}</span>
-                    {key.status === 'active' && <div className="key-actions">
-                      <button className="button button-quiet button-small key-topup" type="button" onClick={() => onTopUp(client, key)}><Icon name="wallet" size={14} />Top up</button>
-                      <button className="text-button key-manual" type="button" onClick={() => onManualTopUp(client, key)}>Penyesuaian manual</button>
-                      <button className="text-button danger-text key-revoke" type="button" onClick={() => onRevoke(client, key.id)}>Cabut key</button>
+                  <div className="key-record" key={key.id}>
+                    <div className="key-row">
+                      <span className="key-row-icon"><Icon name="key" size={16} /></span>
+                      <div className="key-row-identity"><code>{key.keyHint}</code><small>Terakhir dipakai {formatDate(key.lastUsedAt)}</small></div>
+                      <div className="key-balance"><span>Saldo key</span><strong>{formatRupiahBalance(key.balanceIdr)}</strong>{key.lastTopUp && <small>{key.lastTopUp.source === 'singapay' && key.lastTopUp.status === 'pending' ? `${key.lastTopUp.method === 'va' ? 'VA' : 'QRIS'} menunggu` : key.lastTopUp.source === 'singapay' && key.lastTopUp.status === 'needs_review' ? `${key.lastTopUp.method === 'va' ? 'VA' : 'QRIS'} perlu ditinjau` : 'Top-up'} {formatRupiah(key.lastTopUp.amountIdr)} · {formatDate(key.lastTopUp.createdAt, false)}</small>}</div>
+                      <span className={`state ${key.status === 'revoked' ? 'state-neutral' : hasBalance ? 'state-success' : 'state-warning'}`}><i />{keyLabel}</span>
+                      {key.status === 'active' && <div className="key-actions">
+                        <button className="button button-quiet button-small key-topup" type="button" onClick={() => onTopUp(client, key)}><Icon name="wallet" size={14} />Top up</button>
+                        <button className="text-button key-manual" type="button" onClick={() => onManualTopUp(client, key)}>Penyesuaian manual</button>
+                        <button className="text-button danger-text key-revoke" type="button" onClick={() => onRevoke(client, key.id)}>Cabut key</button>
+                      </div>}
+                    </div>
+                    {key.status === 'active' && <div className="integration-key-row">
+                      <div className="integration-key-copy">
+                        <span>{key.integrationCredential ? `API integrasi ${client.status === 'active' ? 'aktif' : 'dijeda'} · ${key.integrationCredential.hint}` : 'API integrasi belum dibuat'}</span>
+                        <small>{client.status !== 'active' ? 'Credential tertahan sampai client diaktifkan kembali.' : key.integrationCredential?.lastUsedAt ? `Terakhir dipakai ${formatDate(key.integrationCredential.lastUsedAt)}` : key.integrationCredential ? `Dibuat ${formatDate(key.integrationCredential.createdAt)}` : 'Untuk server client mengakses saldo dan top-up key ini.'}</small>
+                      </div>
+                      <div className="integration-key-actions">
+                        <button className="button button-quiet button-small" type="button" disabled={client.status !== 'active'} onClick={() => onManageIntegrationKey(client, key)}>{key.integrationCredential ? 'Rotasi credential' : 'Buat API integrasi'}</button>
+                        {key.integrationCredential && <button className="text-button danger-text" type="button" onClick={() => onRevokeIntegrationKey(client, key)}>Cabut integrasi</button>}
+                      </div>
                     </div>}
                   </div>
                 );
@@ -1095,6 +1157,49 @@ function TopUpSuccessDialog({
       <div className="payment-success-note"><Icon name="wallet" size={15} /><span>Saldo tersedia untuk request berikutnya.</span></div>
       <small>Dialog ini menutup otomatis dalam 3 detik.</small>
       <button className="button button-primary" type="button" onClick={onClose}>Selesai</button>
+    </div>
+  );
+}
+
+function IntegrationCredentialDialog({
+  clientName,
+  keyHint,
+  secret,
+  onClose,
+}: {
+  clientName: string;
+  keyHint: string;
+  secret: string;
+  onClose: () => void;
+}) {
+  const [copyMessage, setCopyMessage] = useState('');
+
+  async function copySecret() {
+    try {
+      await navigator.clipboard.writeText(secret);
+      setCopyMessage('API key berhasil disalin.');
+    } catch {
+      setCopyMessage('Salin manual dari field di atas; clipboard tidak tersedia.');
+    }
+  }
+
+  return (
+    <div className="integration-credential-content">
+      <button className="icon-button integration-key-close" type="button" aria-label="Tutup" onClick={onClose}>
+        <Icon name="close" size={18} />
+      </button>
+      <span className="integration-credential-mark"><Icon name="key" size={21} /></span>
+      <span className="integration-credential-kicker">SERVER-TO-SERVER</span>
+      <h2 id="client-modal-title">API integrasi dibuat</h2>
+      <p id="client-modal-description">Credential untuk key <code>{keyHint}</code> milik {clientName}.</p>
+      <label className="integration-secret-field">
+        <span>Secret ditampilkan satu kali</span>
+        <input autoFocus autoComplete="off" readOnly value={secret} onFocus={(event) => event.currentTarget.select()} aria-label="API key integrasi baru" />
+      </label>
+      <button className="button button-primary" type="button" onClick={() => void copySecret()}>Salin API key</button>
+      {copyMessage && <span className="integration-copy-message" role="status">{copyMessage}</span>}
+      <div className="key-handling-note"><Icon name="warning" size={15} /><span>Simpan sekarang di secret manager backend client. Nilai ini tidak dapat dilihat lagi setelah dialog ditutup.</span></div>
+      <button className="button button-quiet" type="button" onClick={onClose}>Selesai</button>
     </div>
   );
 }

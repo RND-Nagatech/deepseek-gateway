@@ -1,10 +1,14 @@
 openapi: 3.1.0
 info:
   title: DeepSeek Monitor Self-Service API
-  version: 1.0.0
+  version: 2.0.0
   description: |
-    Balance, usage, and SingaPay top-up endpoints for the client and API key represented by the supplied
-    DeepSeek key. The key must be registered and active in DeepSeek Monitor.
+    Balance, usage, and SingaPay top-up endpoints for the client key paired with a separate
+    DeepSeek Monitor integration API key. Create or rotate this credential from the internal dashboard.
+    It is not the upstream DeepSeek API key, and it can access only the paired key's self-service data.
+    The integration secret is shown once when issued; store it in the consuming server's secret manager.
+    This credential requirement replaces the previous self-service authentication with a DeepSeek API key.
+    Existing consumers must create an integration credential in the dashboard and update their server configuration.
     Token cache hit and cache miss values are details within input tokens;
     billable tokens are input plus output, so cache tokens are not added twice.
 servers:
@@ -13,13 +17,13 @@ servers:
   - url: http://127.0.0.1:3002
     description: Local backend
 security:
-  - BearerAuth: []
-  - ApiKeyHeader: []
+  - IntegrationBearerAuth: []
+  - IntegrationApiKeyHeader: []
 tags:
   - name: Account
-    description: Balance and usage information for the authenticated API key
+    description: Balance and usage information for the DeepSeek key paired with the integration credential
   - name: Top-ups
-    description: Create, recover, and inspect QRIS or Virtual Account top-ups for the authenticated API key
+    description: Create, recover, and inspect QRIS or Virtual Account top-ups for the paired DeepSeek key
 paths:
   /api/v1/me/balance:
     get:
@@ -43,7 +47,7 @@ paths:
     get:
       operationId: listMyTopUps
       tags: [Top-ups]
-      summary: List SingaPay top-ups for the authenticated API key
+      summary: List SingaPay top-ups for the paired DeepSeek key
       parameters:
         - name: limit
           in: query
@@ -67,7 +71,7 @@ paths:
     post:
       operationId: createMyQrisTopUp
       tags: [Top-ups]
-      summary: Create a QRIS payment for this API key
+      summary: Create a QRIS payment for the paired DeepSeek key
       description: |
         The returned QRIS does not add funds immediately. The balance is credited
         only after a verified SingaPay callback confirms the exact IDR amount.
@@ -96,6 +100,11 @@ paths:
                   maximum: 1000000000
                   description: Whole rupiah amount to add after the provider confirms payment
               required: [amountIdr]
+            examples:
+              qrisTopUp:
+                summary: Create a QRIS top-up
+                value:
+                  amountIdr: 50000
       responses:
         '201':
           description: QRIS payment attempt created or reused
@@ -119,7 +128,7 @@ paths:
     post:
       operationId: createMyVaTopUp
       tags: [Top-ups]
-      summary: Create a temporary Virtual Account for this API key
+      summary: Create a temporary Virtual Account for the paired DeepSeek key
       description: |
         Creates a one-use, temporary VA with a fixed IDR amount. The returned
         number does not add funds immediately. The key balance is credited only
@@ -153,6 +162,12 @@ paths:
                   enum: [BCA, BNI, BRI, MANDIRI, PERMATA, MAYBANK, CIMB, BSI, MUAMALAT, BNC, OCBC, DANAMON]
                   description: Bank code enabled for the merchant's SingaPay account
               required: [amountIdr, bankCode]
+            examples:
+              vaTopUp:
+                summary: Create a BCA Virtual Account top-up
+                value:
+                  amountIdr: 50000
+                  bankCode: BCA
       responses:
         '201':
           description: Virtual Account payment attempt created or reused
@@ -188,7 +203,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          description: No unfinished or recoverable top-up exists for this API key
+          description: No unfinished or recoverable top-up exists for the paired DeepSeek key
           content:
             application/json:
               schema:
@@ -199,7 +214,7 @@ paths:
     get:
       operationId: listMyUsage
       tags: [Account]
-      summary: List usage events for the authenticated API key
+      summary: List usage events for the paired DeepSeek key
       description: |
         Results are ordered newest first. Use nextCursor from the response as
         cursor on the next request, keeping the same from/to filters. The to
@@ -257,7 +272,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          description: Top-up does not belong to this API key
+          description: Top-up does not belong to the paired DeepSeek key
           content:
             application/json:
               schema:
@@ -289,7 +304,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          description: Top-up does not belong to this API key
+          description: Top-up does not belong to the paired DeepSeek key
           content:
             application/json:
               schema:
@@ -356,7 +371,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          description: Top-up does not belong to this API key
+          description: Top-up does not belong to the paired DeepSeek key
           content:
             application/json:
               schema:
@@ -385,7 +400,7 @@ paths:
         - $ref: '#/components/parameters/To'
       responses:
         '200':
-          description: Usage totals for the authenticated API key
+          description: Usage totals for the paired DeepSeek key
           content:
             application/json:
               schema:
@@ -400,15 +415,15 @@ paths:
           $ref: '#/components/responses/InternalServerError'
 components:
   securitySchemes:
-    BearerAuth:
+    IntegrationBearerAuth:
       type: http
       scheme: bearer
-      description: The registered DeepSeek API key used with the gateway
-    ApiKeyHeader:
+      description: The separate integration API key issued by the internal dashboard for one DeepSeek key
+    IntegrationApiKeyHeader:
       type: apiKey
       in: header
-      name: x-api-key
-      description: The same registered DeepSeek API key
+      name: X-Integration-Key
+      description: The separate integration API key issued by the internal dashboard; do not use the DeepSeek upstream key
   parameters:
     From:
       name: from

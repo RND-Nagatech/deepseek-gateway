@@ -29,6 +29,11 @@ export interface ClientKey {
   createdAt?: string;
   balanceIdr: number;
   topUpCount: number;
+  integrationCredential: {
+    hint: string;
+    createdAt: string | null;
+    lastUsedAt: string | null;
+  } | null;
   lastTopUp: {
     amountIdr: number;
     createdAt: string;
