@@ -175,6 +175,15 @@ export class ClientsController {
     return this.singaPay.getTopUp(keyId, merchantRef, id);
   }
 
+  @Post(':id/keys/:keyId/topups/:merchantRef/release')
+  releaseTopUp(
+    @Param('id') id: string,
+    @Param('keyId') keyId: string,
+    @Param('merchantRef') merchantRef: string,
+  ) {
+    return this.singaPay.releaseTopUp(keyId, merchantRef, id);
+  }
+
   @Post(':id/keys/:keyId/topups/:merchantRef/reconcile')
   reconcileTopUp(
     @Param('id') id: string,

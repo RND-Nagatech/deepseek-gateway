@@ -311,6 +311,45 @@ paths:
                 $ref: '#/components/schemas/Error'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/me/topups/{merchantRef}/release:
+    post:
+      operationId: releaseMyStuckQrisTopUp
+      tags: [Top-ups]
+      summary: Release a failed QRIS request that never returned a QR code
+      description: |
+        Frees this key's local top-up lock so a new payment request can be made.
+        This is available only for failed or review-required QRIS attempts without QR or VA data.
+        It does not cancel a payment at SingaPay and does not delete the history record. A late,
+        verified payment callback for the old attempt still credits the balance once.
+      parameters:
+        - name: merchantRef
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '201':
+          description: Request released or already released
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopUpRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Top-up does not belong to the paired DeepSeek key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: QRIS is active, has QR data, or cannot be safely released
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/me/topups/{merchantRef}/retry:
     post:
       operationId: retryMyTopUp
@@ -532,7 +571,14 @@ components:
           format: date-time
         reviewReason:
           type: [string, 'null']
-      required: [amountIdr, currency, method, source, status, merchantRef, providerReference, qrData, vaNumber, bankCode, bankName, expiresAt, createdAt, paidAt, reviewReason]
+        releasedAt:
+          type: [string, 'null']
+          format: date-time
+          description: Set when an eligible failed QRIS request was released from blocking new top-ups
+        canRelease:
+          type: boolean
+          description: True only when this failed or review-required QRIS has no QR or VA data and can be released
+      required: [amountIdr, currency, method, source, status, merchantRef, providerReference, qrData, vaNumber, bankCode, bankName, expiresAt, createdAt, paidAt, reviewReason, releasedAt, canRelease]
     TopUpPage:
       type: object
       properties:

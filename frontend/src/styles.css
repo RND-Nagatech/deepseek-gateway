@@ -364,6 +364,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .va-payment-details p { max-width: 340px; margin: 1px 0 0; color: #53645a; font-size: 10px; line-height: 1.55; }
 .copy-status { color: #476e5b; font-size: 10px; }
 .topup-retry-note { margin: 0; color: #72582f; font-size: 10px; line-height: 1.5; }
+.topup-release-action { display: grid; justify-items: start; gap: 6px; }
+.topup-release-note { margin: 0; color: #72582f; font-size: 10px; line-height: 1.5; }
 .topup-actions { display: grid; gap: 8px; }
 .topup-retry, .topup-reconcile { width: 100%; justify-content: center; }
 .topup-error { margin: 0; align-items: flex-start; }

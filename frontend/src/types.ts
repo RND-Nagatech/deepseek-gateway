@@ -19,6 +19,8 @@ export interface TopUp {
   createdAt: string;
   paidAt: string | null;
   reviewReason: string | null;
+  releasedAt?: string | null;
+  canRelease?: boolean;
 }
 
 export interface ClientKey {
@@ -43,6 +45,7 @@ export interface ClientKey {
     merchantRef?: string | null;
     expiresAt?: string | null;
     paidAt?: string | null;
+    releasedAt?: string | null;
     reviewReason?: string | null;
     reason?: string | null;
   } | null;

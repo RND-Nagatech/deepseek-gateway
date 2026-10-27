@@ -28,6 +28,7 @@ export interface KeyTopUp {
   reviewReason?: string | null;
   retryAllowed?: boolean;
   retryOfMerchantRef?: string | null;
+  releasedAt?: Date | null;
 }
 
 @Schema({ timestamps: true, collection: 'clients' })
@@ -96,6 +97,7 @@ export class ClientKey {
       reviewReason: { type: String, default: null },
       retryAllowed: { type: Boolean, default: false },
       retryOfMerchantRef: { type: String, default: null },
+      releasedAt: { type: Date, default: null },
     }],
     default: [],
   })

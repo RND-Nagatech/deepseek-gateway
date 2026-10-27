@@ -194,6 +194,16 @@ export class PublicApiController {
     return this.singaPay.getTopUp(request.integrationApiIdentity!.key._id as Types.ObjectId, merchantRef);
   }
 
+  @Post('topups/:merchantRef/release')
+  releaseTopUp(@Req() request: IntegrationApiRequest, @Param('merchantRef') merchantRef: string) {
+    const identity = request.integrationApiIdentity!;
+    return this.singaPay.releaseTopUp(
+      identity.key._id as Types.ObjectId,
+      merchantRef,
+      identity.client._id as Types.ObjectId,
+    );
+  }
+
   @Post('topups/:merchantRef/reconcile')
   reconcileTopUp(@Req() request: IntegrationApiRequest, @Param('merchantRef') merchantRef: string) {
     const identity = request.integrationApiIdentity!;

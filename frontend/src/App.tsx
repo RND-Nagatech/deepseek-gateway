@@ -44,6 +44,7 @@ type ModalState =
 const activeTopUpStatuses: TopUpStatus[] = ['creating', 'pending', 'needs_review'];
 const reconcilableTopUpStatuses: TopUpStatus[] = [...activeTopUpStatuses, 'expired', 'failed'];
 function canSafelyReplaceTopUp(topUp: TopUp | null) {
+  if (topUp?.releasedAt) return true;
   const paymentLifetimePassed = Boolean(topUp?.expiresAt && Date.parse(topUp.expiresAt) <= Date.now());
   return Boolean(topUp?.merchantRef && (
     topUp.status === 'expired'
@@ -288,7 +289,7 @@ export function App() {
   }, [authenticated, adminToken, modal]);
 
   useEffect(() => {
-    if (!authenticated || modal?.mode !== 'top-up' || !topUpPayment?.merchantRef
+    if (!authenticated || modal?.mode !== 'top-up' || !topUpPayment?.merchantRef || topUpPayment.releasedAt
       || !activeTopUpStatuses.includes(topUpPayment.status)) return;
 
     const client = modal.client;
@@ -412,7 +413,7 @@ export function App() {
         const amountIdr = Number(topUpAmount);
         const isVa = topUpMethod === 'va';
         const topUpPath = `/clients/${currentModal.client.id}/keys/${currentModal.key.id}`;
-        const replacingAttempt = Boolean(topUpPayment && topUpPayment.status !== 'paid');
+        const replacingAttempt = Boolean(topUpPayment && topUpPayment.status !== 'paid' && !topUpPayment.releasedAt);
         if (replacingAttempt && !canSafelyReplaceTopUp(topUpPayment)) {
           throw new Error('Pembayaran lama masih aktif. Periksa atau tunggu sampai statusnya pasti sebelum membuat top-up baru.');
         }
@@ -500,6 +501,26 @@ export function App() {
       }
     } catch (error) {
       setTopUpError(error instanceof Error ? error.message : 'Status pembayaran tidak dapat diperiksa.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function releaseTopUp(client: Client, key: Client['keys'][number], merchantRef: string) {
+    setLoading(true);
+    setTopUpError('');
+    try {
+      const released = await apiRequest<TopUp>(
+        `/clients/${client.id}/keys/${key.id}/topups/${merchantRef}/release`,
+        adminToken,
+        { method: 'POST' },
+      );
+      setTopUpPayment(released);
+      setTopUpIdempotencyKey(crypto.randomUUID());
+      flash('Permintaan QRIS dilepas. Anda dapat membuat top-up baru; riwayat dan konfirmasi terlambat tetap dicatat.');
+      await refreshAll();
+    } catch (error) {
+      setTopUpError(error instanceof Error ? error.message : 'Permintaan QRIS tidak dapat dilepas.');
     } finally {
       setLoading(false);
     }
@@ -758,6 +779,11 @@ export function App() {
                     void reconcileTopUp(modal.client, modal.key, topUpPayment.merchantRef);
                   }
                 }}
+                onRelease={() => {
+                  if (topUpPayment.merchantRef) {
+                    void releaseTopUp(modal.client, modal.key, topUpPayment.merchantRef);
+                  }
+                }}
               />}
               {modalNeedsAmount && modal.mode === 'top-up' && existingTopUpLoading && <div className="payment-loading" role="status">Memeriksa pembayaran yang masih perlu ditangani…</div>}
               {modal.mode === 'top-up' && !existingTopUpLoading && <>
@@ -787,7 +813,7 @@ export function App() {
               {modal.mode === 'manual-top-up' && <div className="key-handling-note"><Icon name="warning" size={15} /><span>Penyesuaian langsung masuk ke saldo key dan tercatat bersama alasannya.</span></div>}
               <div className="modal-actions">
                 {modal.mode === 'top-up' ? <button className="button button-quiet" type="button" onClick={closeModal}>Tutup</button> : <button className="button button-quiet" type="button" onClick={closeModal}>Batal</button>}
-                {modal.mode !== 'top-up' || canSubmitTopUp ? <button className={`button button-primary ${modal.mode === 'revoke-integration-key' ? 'button-danger' : ''}`} type="submit" disabled={loading || (modal.mode === 'new-client' && (!clientName.trim() || !apiKey.trim())) || (modal.mode === 'add-key' && !apiKey.trim()) || (modal.mode === 'rename-client' && !clientName.trim()) || ((modal.mode === 'top-up' || modal.mode === 'manual-top-up') && (!Number.isSafeInteger(Number(topUpAmount)) || Number(topUpAmount) < topUpMinimum || Number(topUpAmount) > 1_000_000_000)) || (modal.mode === 'manual-top-up' && !manualTopUpReason.trim())}>{loading ? modal.mode === 'top-up' ? canSafelyReplaceTopUp(topUpPayment) ? 'Memeriksa pembayaran…' : topUpMethod === 'va' ? 'Membuat VA…' : 'Membuat QRIS…' : 'Menyimpan…' : modal.mode === 'new-client' ? 'Simpan client' : modal.mode === 'add-key' ? 'Tambahkan key' : modal.mode === 'rename-client' ? 'Simpan nama' : modal.mode === 'revoke-key' ? 'Cabut key' : modal.mode === 'integration-key-confirm' ? modal.rotating ? 'Rotasi key integrasi' : 'Buat key integrasi' : modal.mode === 'revoke-integration-key' ? 'Cabut akses' : modal.mode === 'manual-top-up' ? 'Catat penyesuaian' : canSafelyReplaceTopUp(topUpPayment) ? `Periksa & buat ${topUpMethod === 'va' ? 'Virtual Account' : 'QRIS'}` : topUpMethod === 'va' ? 'Buat Virtual Account' : 'Buat QRIS'}</button> : null}
+                {modal.mode !== 'top-up' || canSubmitTopUp ? <button className={`button button-primary ${modal.mode === 'revoke-integration-key' ? 'button-danger' : ''}`} type="submit" disabled={loading || (modal.mode === 'new-client' && (!clientName.trim() || !apiKey.trim())) || (modal.mode === 'add-key' && !apiKey.trim()) || (modal.mode === 'rename-client' && !clientName.trim()) || ((modal.mode === 'top-up' || modal.mode === 'manual-top-up') && (!Number.isSafeInteger(Number(topUpAmount)) || Number(topUpAmount) < topUpMinimum || Number(topUpAmount) > 1_000_000_000)) || (modal.mode === 'manual-top-up' && !manualTopUpReason.trim())}>{loading ? modal.mode === 'top-up' ? canSafelyReplaceTopUp(topUpPayment) && !topUpPayment?.releasedAt ? 'Memeriksa pembayaran…' : topUpMethod === 'va' ? 'Membuat VA…' : 'Membuat QRIS…' : 'Menyimpan…' : modal.mode === 'new-client' ? 'Simpan client' : modal.mode === 'add-key' ? 'Tambahkan key' : modal.mode === 'rename-client' ? 'Simpan nama' : modal.mode === 'revoke-key' ? 'Cabut key' : modal.mode === 'integration-key-confirm' ? modal.rotating ? 'Rotasi key integrasi' : 'Buat key integrasi' : modal.mode === 'revoke-integration-key' ? 'Cabut akses' : modal.mode === 'manual-top-up' ? 'Catat penyesuaian' : canSafelyReplaceTopUp(topUpPayment) && !topUpPayment?.releasedAt ? `Periksa & buat ${topUpMethod === 'va' ? 'Virtual Account' : 'QRIS'}` : topUpMethod === 'va' ? 'Buat Virtual Account' : 'Buat QRIS'}</button> : null}
               </div>
             </form>
           </>}
@@ -966,7 +992,7 @@ function ClientsPage({
                     <div className="key-row">
                       <span className="key-row-icon"><Icon name="key" size={16} /></span>
                       <div className="key-row-identity"><code>{key.keyHint}</code><small>Terakhir dipakai {formatDate(key.lastUsedAt)}</small></div>
-                      <div className="key-balance"><span>Saldo key</span><strong>{formatRupiahBalance(key.balanceIdr)}</strong>{key.lastTopUp && <small>{key.lastTopUp.source === 'singapay' && key.lastTopUp.status === 'pending' ? `${key.lastTopUp.method === 'va' ? 'VA' : 'QRIS'} menunggu` : key.lastTopUp.source === 'singapay' && key.lastTopUp.status === 'needs_review' ? `${key.lastTopUp.method === 'va' ? 'VA' : 'QRIS'} perlu ditinjau` : 'Top-up'} {formatRupiah(key.lastTopUp.amountIdr)} · {formatDate(key.lastTopUp.createdAt, false)}</small>}</div>
+                      <div className="key-balance"><span>Saldo key</span><strong>{formatRupiahBalance(key.balanceIdr)}</strong>{key.lastTopUp && <small>{key.lastTopUp.releasedAt ? 'QRIS dilepas' : key.lastTopUp.source === 'singapay' && key.lastTopUp.status === 'pending' ? `${key.lastTopUp.method === 'va' ? 'VA' : 'QRIS'} menunggu` : key.lastTopUp.source === 'singapay' && key.lastTopUp.status === 'needs_review' ? `${key.lastTopUp.method === 'va' ? 'VA' : 'QRIS'} perlu ditinjau` : 'Top-up'} {formatRupiah(key.lastTopUp.amountIdr)} · {formatDate(key.lastTopUp.createdAt, false)}</small>}</div>
                       <span className={`state ${key.status === 'revoked' ? 'state-neutral' : hasBalance ? 'state-success' : 'state-warning'}`}><i />{keyLabel}</span>
                       {key.status === 'active' && <div className="key-actions">
                         <button className="button button-quiet button-small key-topup" type="button" onClick={() => onTopUp(client, key)}><Icon name="wallet" size={14} />Top up</button>
@@ -1255,10 +1281,11 @@ function PaymentSuccessIllustration() {
   );
 }
 
-function TopUpPaymentPanel({ topUp, loading, onReconcile }: {
+function TopUpPaymentPanel({ topUp, loading, onReconcile, onRelease }: {
   topUp: TopUp;
   loading: boolean;
   onReconcile: () => void;
+  onRelease: () => void;
 }) {
   const isVa = topUp.method === 'va';
   const paymentLabel = isVa ? 'Virtual Account' : 'QRIS';
@@ -1302,7 +1329,11 @@ function TopUpPaymentPanel({ topUp, loading, onReconcile }: {
     failed: `SingaPay menolak pembuatan ${isVa ? 'VA' : 'QR'}. Saldo belum berubah; periksa referensi sebelum mencoba lagi.`,
     needs_review: topUp.reviewReason ?? 'Status pembayaran belum dapat dipastikan. Jangan bayar ulang dulu; periksa referensi ini.',
   };
-  const retryAvailable = canSafelyReplaceTopUp(topUp);
+  const paymentStatusLabel = topUp.releasedAt && topUp.status !== 'paid' ? 'Permintaan dilepas' : statusLabels[topUp.status];
+  const paymentStatusMessage = topUp.releasedAt && topUp.status !== 'paid'
+    ? 'Permintaan ini tidak lagi menahan top-up baru. Riwayat tetap disimpan; jika pembayaran lama terkonfirmasi, saldo tetap akan dikreditkan.'
+    : statusMessage[topUp.status];
+  const retryAvailable = !topUp.releasedAt && canSafelyReplaceTopUp(topUp);
 
   async function copyPaymentDetail() {
     const value = isVa ? topUp.vaNumber : topUp.qrData;
@@ -1320,14 +1351,14 @@ function TopUpPaymentPanel({ topUp, loading, onReconcile }: {
     <section className={`topup-payment topup-payment-${topUp.status}`} aria-live="polite">
       <div className="topup-payment-heading">
         <div><span>Pembayaran {paymentLabel}</span><strong>{formatRupiah(topUp.amountIdr)}</strong></div>
-        <span className={`payment-status payment-status-${topUp.status}`}><i aria-hidden="true" />{statusLabels[topUp.status]}</span>
+        <span className={`payment-status payment-status-${topUp.status}`}><i aria-hidden="true" />{paymentStatusLabel}</span>
       </div>
       {isVa && topUp.status === 'pending' && (
         <div className="va-payment-details">
           <span>{topUp.bankName ?? topUp.bankCode ?? 'Bank tujuan'}</span>
           <strong>{topUp.vaNumber ?? 'Nomor VA belum tersedia'}</strong>
           {topUp.vaNumber && <button className="button button-quiet button-small" type="button" onClick={() => void copyPaymentDetail()}><Icon name="copy" size={14} /> Salin nomor VA</button>}
-          <p>{statusMessage[topUp.status]}</p>
+          <p>{paymentStatusMessage}</p>
           {copyState && <span className="copy-status" role="status">{copyState}</span>}
         </div>
       )}
@@ -1337,7 +1368,7 @@ function TopUpPaymentPanel({ topUp, loading, onReconcile }: {
           <p>{statusMessage[topUp.status]}</p>
         </div>
       )}
-      {(!isVa && (topUp.status !== 'pending' || !topUp.qrData)) || (isVa && topUp.status !== 'pending') ? <p className="topup-status-message">{statusMessage[topUp.status]}</p> : null}
+      {(!isVa && (topUp.status !== 'pending' || !topUp.qrData)) || (isVa && topUp.status !== 'pending') ? <p className="topup-status-message">{paymentStatusMessage}</p> : null}
       <dl className="topup-payment-meta">
         <div><dt>Referensi</dt><dd>{topUp.merchantRef ?? 'Belum tersedia'}</dd></div>
         {isVa && topUp.bankName && <div><dt>Bank</dt><dd>{topUp.bankName}</dd></div>}
@@ -1353,6 +1384,15 @@ function TopUpPaymentPanel({ topUp, loading, onReconcile }: {
         </details>
       )}
       {retryAvailable && <p className="topup-retry-note">SingaPay akan diperiksa sebelum pembayaran baru dibuat. Pembayaran lama yang masuk belakangan tetap bisa menambah saldo.</p>}
+      {topUp.releasedAt && <p className="topup-release-note">Permintaan lama tetap ada di riwayat dan bisa diperiksa. Jika SingaPay mengonfirmasi pembayaran terlambat, saldo tetap bertambah.</p>}
+      {topUp.canRelease && topUp.merchantRef && (
+        <div className="topup-release-action">
+          <button className="button button-quiet button-small" type="button" disabled={loading} onClick={onRelease}>
+            {loading ? 'Melepas permintaan…' : 'Lepaskan QRIS macet'}
+          </button>
+          <p className="topup-release-note">Hanya tersedia karena QR tidak pernah ditampilkan. Tindakan ini membuka top-up baru; tidak membatalkan transaksi di SingaPay.</p>
+        </div>
+      )}
       {reconcilableTopUpStatuses.includes(topUp.status) && topUp.merchantRef && (
         <div className="topup-actions">
           <button

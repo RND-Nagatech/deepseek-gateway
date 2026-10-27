@@ -290,6 +290,7 @@ export class ClientsService {
       merchantRef: topUp.merchantRef ?? null,
       expiresAt: topUp.expiresAt ?? null,
       paidAt: topUp.paidAt ?? null,
+      releasedAt: topUp.releasedAt ?? null,
       reviewReason: topUp.reviewReason ?? null,
       reason: topUp.reason ?? null,
     };

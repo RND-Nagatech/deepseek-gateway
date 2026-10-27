@@ -243,12 +243,13 @@ export class SingaPayService {
         $and: [
           { topUps: { $not: { $elemMatch: { idempotencyKey } } } },
           { topUps: { $not: { $elemMatch: { source: 'singapay', status: { $in: REQUEST_IN_PROGRESS_STATUSES } } } } },
-          { topUps: { $not: { $elemMatch: { source: 'singapay', status: { $in: RETRYABLE_ATTEMPT_STATUSES }, retryAllowed: { $ne: true } } } } },
+          { topUps: { $not: { $elemMatch: { source: 'singapay', status: { $in: RETRYABLE_ATTEMPT_STATUSES }, retryAllowed: { $ne: true }, releasedAt: null } } } },
           ...(retryOfMerchantRef ? [{ topUps: { $elemMatch: {
             merchantRef: retryOfMerchantRef,
             source: 'singapay',
             status: { $in: RETRYABLE_ATTEMPT_STATUSES },
             retryAllowed: true,
+            releasedAt: null,
           } } }] : []),
         ],
       },
@@ -407,12 +408,13 @@ export class SingaPayService {
         $and: [
           { topUps: { $not: { $elemMatch: { idempotencyKey } } } },
           { topUps: { $not: { $elemMatch: { source: 'singapay', status: { $in: REQUEST_IN_PROGRESS_STATUSES } } } } },
-          { topUps: { $not: { $elemMatch: { source: 'singapay', status: { $in: RETRYABLE_ATTEMPT_STATUSES }, retryAllowed: { $ne: true } } } } },
+          { topUps: { $not: { $elemMatch: { source: 'singapay', status: { $in: RETRYABLE_ATTEMPT_STATUSES }, retryAllowed: { $ne: true }, releasedAt: null } } } },
           ...(retryOfMerchantRef ? [{ topUps: { $elemMatch: {
             merchantRef: retryOfMerchantRef,
             source: 'singapay',
             status: { $in: RETRYABLE_ATTEMPT_STATUSES },
             retryAllowed: true,
+            releasedAt: null,
           } } }] : []),
         ],
       },
@@ -569,6 +571,52 @@ export class SingaPayService {
     return this.toView(attempt);
   }
 
+  async releaseTopUp(keyId: Types.ObjectId | string, merchantRef: string, clientId?: Types.ObjectId | string) {
+    const attempt = await this.findAttempt(keyId, { merchantRef }, clientId);
+    if (!attempt) throw new NotFoundException('Top-up tidak ditemukan untuk API key ini.');
+    if (attempt.status === 'paid' || attempt.releasedAt) return this.toView(attempt);
+    if (!this.canReleaseTopUp(attempt)) {
+      throw new ConflictException('Hanya permintaan QRIS gagal yang belum menampilkan kode QR yang dapat dilepas. QRIS aktif harus diperiksa atau kedaluwarsa lebih dulu.');
+    }
+
+    const releasedAt = new Date();
+    const result = await this.keys.updateOne(
+      {
+        _id: keyId,
+        ...(clientId ? { clientId } : {}),
+        status: 'active',
+        topUps: { $elemMatch: {
+          merchantRef,
+          source: 'singapay',
+          method: 'qris',
+          status: { $in: ['needs_review', 'failed'] },
+          qrData: null,
+          vaNumber: null,
+          releasedAt: null,
+        } },
+      },
+      { $set: { 'topUps.$[payment].releasedAt': releasedAt } },
+      { arrayFilters: [{
+        'payment.merchantRef': merchantRef,
+        'payment.source': 'singapay',
+        'payment.method': 'qris',
+        'payment.status': { $in: ['needs_review', 'failed'] },
+        'payment.qrData': null,
+        'payment.vaNumber': null,
+        'payment.releasedAt': null,
+      }] },
+    ).exec();
+    if (result.modifiedCount !== 1) {
+      const latest = await this.findAttempt(keyId, { merchantRef }, clientId);
+      if (latest?.status === 'paid' || latest?.releasedAt) return this.toView(latest);
+      throw new ConflictException('Status QRIS berubah saat dilepas. Periksa status pembayaran lalu coba lagi.');
+    }
+
+    const released = await this.findAttempt(keyId, { merchantRef }, clientId);
+    if (!released) throw new NotFoundException('Top-up tidak ditemukan untuk API key ini.');
+    return this.toView(released);
+  }
+
   async getActiveTopUp(keyId: Types.ObjectId | string, clientId?: Types.ObjectId | string) {
     const attempt = await this.findActiveAttempt(keyId, clientId);
     if (!attempt) throw new NotFoundException('Tidak ada top-up SingaPay yang masih perlu diperiksa.');
@@ -699,6 +747,9 @@ export class SingaPayService {
   ) {
     const attempt = await this.findAttempt(keyId, { merchantRef }, clientId);
     if (!attempt) throw new NotFoundException('Top-up tidak ditemukan untuk API key ini.');
+    if (attempt.releasedAt && attempt.status !== 'paid') {
+      throw new ConflictException('Permintaan lama sudah dilepas. Buat top-up baru untuk mencoba pembayaran lagi.');
+    }
     return attempt.method === 'va'
       ? this.retryVaTopUp(keyId, merchantRef, idempotencyKey, clientId, options)
       : this.retryQrisTopUp(keyId, merchantRef, idempotencyKey, clientId, options);
@@ -1528,7 +1579,7 @@ export class SingaPayService {
     const key = await this.keys.findOne({ _id: keyId, ...(clientId ? { clientId } : {}) }).select('topUps').lean().exec();
     if (!key) return null;
     const latestAttempt = [...(key.topUps ?? [])].reverse().find((item) => item.source === 'singapay');
-    if (!latestAttempt || !RESUMABLE_TOPUP_STATUSES.includes(latestAttempt.status ?? 'pending')) return null;
+    if (!latestAttempt || latestAttempt.releasedAt || !RESUMABLE_TOPUP_STATUSES.includes(latestAttempt.status ?? 'pending')) return null;
     if (latestAttempt.method === 'va' && latestAttempt.status === 'failed' && latestAttempt.retryAllowed === true
       && !latestAttempt.vaNumber && !latestAttempt.qrData) return null;
     return latestAttempt;
@@ -1539,6 +1590,7 @@ export class SingaPayService {
     if (!key) return null;
     return [...(key.topUps ?? [])].reverse().find((item) => {
       if (item.source !== 'singapay') return false;
+      if (item.releasedAt) return false;
       const status = item.status ?? 'pending';
       return REQUEST_IN_PROGRESS_STATUSES.includes(status)
         || (RETRYABLE_ATTEMPT_STATUSES.includes(status) && item.retryAllowed !== true);
@@ -1764,6 +1816,17 @@ export class SingaPayService {
       createdAt: item.createdAt,
       paidAt: item.paidAt ?? null,
       reviewReason: item.reviewReason ?? null,
+      releasedAt: item.releasedAt ?? null,
+      canRelease: this.canReleaseTopUp(item),
     };
+  }
+
+  private canReleaseTopUp(item: KeyTopUp) {
+    return item.source === 'singapay'
+      && item.method === 'qris'
+      && !item.releasedAt
+      && !item.qrData
+      && !item.vaNumber
+      && (item.status === 'needs_review' || item.status === 'failed');
   }
 }
