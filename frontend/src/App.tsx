@@ -1,4 +1,14 @@
-import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, MouseEvent as ReactMouseEvent, ReactNode, Ref, useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion, useIsPresent } from 'motion/react';
+import {
+  blur,
+  ReducedMotionConfig,
+  scale,
+  spring,
+  transition as motionTransition,
+  useShouldReduceMotion,
+  useTempoTransition,
+} from '@animate-ui/react/utils/motion';
 import QRCode from 'qrcode';
 import { CostChart } from './components/CostChart';
 import { Icon, IconName } from './components/Icon';
@@ -20,6 +30,7 @@ type ModalState =
   | { mode: 'rename-client'; client: Client }
   | { mode: 'revoke-key'; client: Client; keyId: string }
   | { mode: 'top-up'; client: Client; key: Client['keys'][number] }
+  | { mode: 'top-up-success'; amountIdr: number; clientName: string; keyHint: string }
   | { mode: 'manual-top-up'; client: Client; key: Client['keys'][number] }
   | null;
 
@@ -85,6 +96,7 @@ export function App() {
   const [priceInput, setPriceInput] = useState('50000');
   const dialogRef = useRef<HTMLElement | null>(null);
   const modalTriggerRef = useRef<HTMLElement | null>(null);
+  const successModalTimerRef = useRef<number | null>(null);
 
   function openModal(nextModal: Exclude<ModalState, null>) {
     modalTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -103,6 +115,8 @@ export function App() {
   }
 
   function closeModal() {
+    if (successModalTimerRef.current !== null) window.clearTimeout(successModalTimerRef.current);
+    successModalTimerRef.current = null;
     setModal(null);
     setClientName('');
     setApiKey('');
@@ -115,7 +129,25 @@ export function App() {
     setExistingTopUpLoading(false);
     setTopUpIdempotencyKey('');
     setShowKey(false);
+  }
+
+  function restoreModalFocus() {
     window.requestAnimationFrame(() => modalTriggerRef.current?.focus());
+  }
+
+  function showTopUpSuccess(amountIdr: number, client: Client, key: Client['keys'][number]) {
+    if (successModalTimerRef.current !== null) window.clearTimeout(successModalTimerRef.current);
+    successModalTimerRef.current = null;
+    setTopUpPayment(null);
+    setTopUpError('');
+    setExistingTopUpLoading(false);
+    setTopUpIdempotencyKey('');
+    setModal({ mode: 'top-up-success', amountIdr, clientName: client.name, keyHint: key.keyHint });
+  }
+
+  function startSuccessModalTimer() {
+    if (successModalTimerRef.current !== null) window.clearTimeout(successModalTimerRef.current);
+    successModalTimerRef.current = window.setTimeout(() => closeModal(), 3000);
   }
 
   useEffect(() => {
@@ -144,6 +176,10 @@ export function App() {
     window.addEventListener('keydown', keepModalKeyboardAccessible);
     return () => window.removeEventListener('keydown', keepModalKeyboardAccessible);
   }, [modal]);
+
+  useEffect(() => () => {
+    if (successModalTimerRef.current !== null) window.clearTimeout(successModalTimerRef.current);
+  }, []);
 
   async function fetchAll(token: string, period = days) {
     const [overviewData, clientData, usageData, pricingData] = await Promise.all([
@@ -245,7 +281,7 @@ export function App() {
           setTopUpPayment(nextTopUp);
           if (nextTopUp.status === 'paid') {
             void apiRequest<Client[]>('/clients', adminToken).then(setClients).catch(() => undefined);
-            flash(`${formatRupiah(nextTopUp.amountIdr)} masuk ke saldo key.`);
+            showTopUpSuccess(nextTopUp.amountIdr, client, key);
           }
         })
         .catch((error: unknown) => setPageError(error instanceof Error ? error.message : 'Status pembayaran tidak dapat diperbarui.'));
@@ -357,24 +393,28 @@ export function App() {
             }),
           },
         );
+        if (payment.status === 'paid') {
+          showTopUpSuccess(payment.amountIdr, currentModal.client, currentModal.key);
+          void refreshAll().catch(() => setPageError('Pembayaran berhasil, tetapi ringkasan saldo belum dapat diperbarui.'));
+          return;
+        }
         setTopUpPayment(payment);
         setTopUpAmount(String(amountIdr));
-        const previousPaymentWasPaid = replacingAttempt && payment.status === 'paid';
-        setTopUpMethod(previousPaymentWasPaid ? topUpMethod : payment.method);
-        if (payment.bankCode && !previousPaymentWasPaid) setTopUpBankCode(payment.bankCode);
+        setTopUpMethod(payment.method);
+        if (payment.bankCode) setTopUpBankCode(payment.bankCode);
         setTopUpIdempotencyKey(crypto.randomUUID());
-        flash(payment.status === 'paid'
-          ? `${formatRupiah(payment.amountIdr)} masuk ke saldo ${currentModal.key.keyHint}.`
-          : `${payment.method === 'va' ? 'Virtual Account' : 'QRIS'} siap. Saldo bertambah setelah pembayaran dikonfirmasi.`);
+        flash(`${payment.method === 'va' ? 'Virtual Account' : 'QRIS'} siap. Saldo bertambah setelah pembayaran dikonfirmasi.`);
         await refreshAll();
         return;
-      } else {
+      } else if (currentModal.mode === 'manual-top-up') {
         const amountIdr = Number(topUpAmount);
         await apiRequest(`/clients/${currentModal.client.id}/keys/${currentModal.key.id}/topups`, adminToken, {
           method: 'POST',
           body: JSON.stringify({ amountIdr, reason: manualTopUpReason.trim() }),
         });
         flash(`${formatRupiah(amountIdr)} ditambahkan secara manual ke saldo ${currentModal.key.keyHint}.`);
+      } else {
+        return;
       }
       closeModal();
       await refreshAll();
@@ -411,8 +451,8 @@ export function App() {
       );
       setTopUpPayment(result);
       if (result.status === 'paid') {
-        await apiRequest<Client[]>('/clients', adminToken).then(setClients);
-        flash(`${formatRupiah(result.amountIdr)} masuk ke saldo key.`);
+        void apiRequest<Client[]>('/clients', adminToken).then(setClients).catch(() => undefined);
+        showTopUpSuccess(result.amountIdr, client, key);
       } else if (result.status === 'expired') {
         flash(`${result.method === 'va' ? 'VA' : 'QRIS'} kedaluwarsa. Pilih nominal dan metode untuk membuat pembayaran baru.`);
       } else if (result.status === 'needs_review') {
@@ -503,7 +543,9 @@ export function App() {
           ? 'Cabut API key'
           : modal?.mode === 'manual-top-up'
             ? 'Penyesuaian saldo'
-            : 'Top up saldo';
+            : modal?.mode === 'top-up-success'
+              ? 'Pembayaran berhasil'
+              : 'Top up saldo';
   const modalDescription = modal?.mode === 'new-client'
     ? 'Pasangkan key DeepSeek yang sudah digunakan client.'
     : modal?.mode === 'add-key'
@@ -514,6 +556,8 @@ export function App() {
           ? `Cabut key milik ${modal.client.name}. Request berikutnya dengan key ini akan ditolak.`
           : modal?.mode === 'top-up'
             ? `Pilih metode pembayaran untuk key ${modal.key.keyHint} milik ${modal.client.name}. Saldo masuk setelah SingaPay mengonfirmasi pembayaran.`
+            : modal?.mode === 'top-up-success'
+              ? `Top up ${formatRupiah(modal.amountIdr)} berhasil masuk ke saldo key ${modal.keyHint}.`
             : modal?.mode === 'manual-top-up'
               ? `Catat penyesuaian langsung pada saldo key ${modal.key.keyHint} milik ${modal.client.name}.`
             : '';
@@ -616,9 +660,23 @@ export function App() {
         </main>
       </div>
 
-      {modal && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}>
-            <section className="modal-panel" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="client-modal-title" aria-describedby="client-modal-description">
+      <AnimatedModalLayer
+        open={Boolean(modal)}
+        modalKey={modal?.mode ?? ''}
+        className={`modal-panel ${modal?.mode === 'top-up-success' ? 'payment-success-modal' : ''}`}
+        dialogRef={dialogRef}
+        onBackdropMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}
+        onCloseComplete={restoreModalFocus}
+        onSuccessEntered={modal?.mode === 'top-up-success' ? startSuccessModalTimer : undefined}
+      >
+        {modal?.mode === 'top-up-success' ? (
+          <TopUpSuccessDialog
+            amountIdr={modal.amountIdr}
+            clientName={modal.clientName}
+            keyHint={modal.keyHint}
+            onClose={closeModal}
+          />
+        ) : modal && <>
             <div className="modal-head">
               <div><span className="modal-mark"><Icon name={modal.mode === 'rename-client' ? 'clients' : modal.mode === 'top-up' || modal.mode === 'manual-top-up' ? 'wallet' : 'key'} size={18} /></span><div><h2 id="client-modal-title">{modalTitle}</h2><p id="client-modal-description">{modalDescription}</p></div></div>
               <button className="icon-button" type="button" aria-label="Tutup" autoFocus={modal.mode === 'revoke-key'} onClick={closeModal}><Icon name="close" size={18} /></button>
@@ -667,9 +725,8 @@ export function App() {
                 {modal.mode !== 'top-up' || canSubmitTopUp ? <button className="button button-primary" type="submit" disabled={loading || (modal.mode === 'new-client' && (!clientName.trim() || !apiKey.trim())) || (modal.mode === 'add-key' && !apiKey.trim()) || (modal.mode === 'rename-client' && !clientName.trim()) || ((modal.mode === 'top-up' || modal.mode === 'manual-top-up') && (!Number.isSafeInteger(Number(topUpAmount)) || Number(topUpAmount) < topUpMinimum || Number(topUpAmount) > 1_000_000_000)) || (modal.mode === 'manual-top-up' && !manualTopUpReason.trim())}>{loading ? modal.mode === 'top-up' ? canSafelyReplaceTopUp(topUpPayment) ? 'Memeriksa pembayaran…' : topUpMethod === 'va' ? 'Membuat VA…' : 'Membuat QRIS…' : 'Menyimpan…' : modal.mode === 'new-client' ? 'Simpan client' : modal.mode === 'add-key' ? 'Tambahkan key' : modal.mode === 'rename-client' ? 'Simpan nama' : modal.mode === 'revoke-key' ? 'Cabut key' : modal.mode === 'manual-top-up' ? 'Catat penyesuaian' : canSafelyReplaceTopUp(topUpPayment) ? `Periksa & buat ${topUpMethod === 'va' ? 'Virtual Account' : 'QRIS'}` : topUpMethod === 'va' ? 'Buat Virtual Account' : 'Buat QRIS'}</button> : null}
               </div>
             </form>
-          </section>
-        </div>
-      )}
+          </>}
+      </AnimatedModalLayer>
     </div>
   );
 }
@@ -856,6 +913,221 @@ function ClientsPage({
       )}
       <p className="page-footnote"><Icon name="warning" size={14} />Saldo dicatat per key. Request ditolak sebelum diteruskan jika saldo di bawah Rp10.</p>
     </>
+  );
+}
+
+function AnimatedModalLayer({
+  open,
+  modalKey,
+  className,
+  dialogRef,
+  onBackdropMouseDown,
+  onCloseComplete,
+  onSuccessEntered,
+  children,
+}: {
+  open: boolean;
+  modalKey: string;
+  className: string;
+  dialogRef: Ref<HTMLElement>;
+  onBackdropMouseDown: (event: ReactMouseEvent<HTMLDivElement>) => void;
+  onCloseComplete: () => void;
+  onSuccessEntered?: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <ReducedMotionConfig>
+      <AnimatedModalPresence
+        open={open}
+        modalKey={modalKey}
+        className={className}
+        dialogRef={dialogRef}
+        onBackdropMouseDown={onBackdropMouseDown}
+        onCloseComplete={onCloseComplete}
+        onSuccessEntered={onSuccessEntered}
+      >
+        {children}
+      </AnimatedModalPresence>
+    </ReducedMotionConfig>
+  );
+}
+
+function AnimatedModalPresence({
+  open,
+  modalKey,
+  className,
+  dialogRef,
+  onBackdropMouseDown,
+  onCloseComplete,
+  onSuccessEntered,
+  children,
+}: {
+  open: boolean;
+  modalKey: string;
+  className: string;
+  dialogRef: Ref<HTMLElement>;
+  onBackdropMouseDown: (event: ReactMouseEvent<HTMLDivElement>) => void;
+  onCloseComplete: () => void;
+  onSuccessEntered?: () => void;
+  children: ReactNode;
+}) {
+  const overlay = useTempoTransition(motionTransition.overlay);
+
+  return (
+    <>
+      <AnimatePresence onExitComplete={onCloseComplete}>
+        {open && <motion.div
+          key="modal-backdrop"
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={onBackdropMouseDown}
+          initial={{ backgroundColor: 'rgba(20, 35, 29, 0)' }}
+          animate={{ backgroundColor: 'rgba(20, 35, 29, .42)', transition: overlay }}
+          exit={{ backgroundColor: 'rgba(20, 35, 29, 0)', transition: overlay }}
+        />}
+      </AnimatePresence>
+      <AnimatePresence mode="wait">
+        {open && <AnimatedModalPanel
+          key={modalKey}
+          modalKey={modalKey}
+          className={className}
+          dialogRef={dialogRef}
+          onSuccessEntered={onSuccessEntered}
+        >
+          {children}
+        </AnimatedModalPanel>}
+      </AnimatePresence>
+    </>
+  );
+}
+
+function AnimatedModalPanel({
+  modalKey,
+  className,
+  dialogRef,
+  onSuccessEntered,
+  children,
+}: {
+  modalKey: string;
+  className: string;
+  dialogRef: Ref<HTMLElement>;
+  onSuccessEntered?: () => void;
+  children: ReactNode;
+}) {
+  const isPresent = useIsPresent();
+  const reduce = useShouldReduceMotion();
+  const enter = useTempoTransition(spring.dialog);
+  const fade = useTempoTransition(motionTransition.dialogFade);
+  const dismiss = useTempoTransition(motionTransition.dismiss);
+  const upright = 'perspective(500px) rotateX(0deg) scale(1)';
+  const tipped = `perspective(500px) rotateX(-20deg) scale(${scale.dialog})`;
+  const hidden = {
+    opacity: 0,
+    filter: blur.surface,
+    transform: reduce ? upright : tipped,
+  };
+
+  return (
+    <motion.section
+      ref={dialogRef}
+      className={className}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="client-modal-title"
+      aria-describedby="client-modal-description"
+      aria-hidden={!isPresent}
+      inert={!isPresent}
+      initial={hidden}
+      animate={{
+        opacity: 1,
+        filter: 'blur(0px)',
+        transform: upright,
+        transition: { ...enter, opacity: fade },
+      }}
+      exit={{ ...hidden, transition: dismiss }}
+      onAnimationComplete={modalKey === 'top-up-success' ? onSuccessEntered : undefined}
+    >
+      {children}
+    </motion.section>
+  );
+}
+
+function TopUpSuccessDialog({
+  amountIdr,
+  clientName,
+  keyHint,
+  onClose,
+}: {
+  amountIdr: number;
+  clientName: string;
+  keyHint: string;
+  onClose: () => void;
+}) {
+  return (
+    <div className="payment-success-content">
+      <button className="icon-button payment-success-close" type="button" aria-label="Tutup" autoFocus onClick={onClose}>
+        <Icon name="close" size={18} />
+      </button>
+      <PaymentSuccessIllustration />
+      <span className="payment-success-kicker">PEMBAYARAN DITERIMA</span>
+      <h2 id="client-modal-title">Top up berhasil</h2>
+      <strong className="payment-success-amount">{formatRupiah(amountIdr)}</strong>
+      <p id="client-modal-description">Saldo key <code>{keyHint}</code> milik {clientName} sudah diperbarui.</p>
+      <div className="payment-success-note"><Icon name="wallet" size={15} /><span>Saldo tersedia untuk request berikutnya.</span></div>
+      <small>Dialog ini menutup otomatis dalam 3 detik.</small>
+      <button className="button button-primary" type="button" onClick={onClose}>Selesai</button>
+    </div>
+  );
+}
+
+function PaymentSuccessIllustration() {
+  const reduce = useShouldReduceMotion();
+  const entrance = useTempoTransition(spring.entrance);
+  const checkPop = useTempoTransition(spring.checkPop);
+  const checkDraw = useTempoTransition(motionTransition.check);
+  const swap = useTempoTransition(motionTransition.swap);
+
+  return (
+    <motion.div
+      className="payment-success-art"
+      aria-hidden="true"
+      initial={{ opacity: 0, filter: blur.surface, scale: reduce ? 1 : scale.dialog }}
+      animate={{ opacity: 1, filter: 'blur(0px)', scale: 1, transition: entrance }}
+    >
+      <svg viewBox="0 0 120 120" fill="none">
+        <motion.circle
+          cx="60"
+          cy="60"
+          r="47"
+          className="payment-success-halo"
+          initial={{ opacity: 0, scale: reduce ? 1 : scale.dialog }}
+          animate={{ opacity: 0.48, scale: 1, transition: entrance }}
+          style={{ originX: '50%', originY: '50%' }}
+        />
+        <motion.circle
+          cx="60"
+          cy="60"
+          r="34"
+          className="payment-success-disc"
+          initial={{ opacity: 0, scale: reduce ? 1 : scale.dialog }}
+          animate={{ opacity: 1, scale: 1, transition: entrance }}
+          style={{ originX: '50%', originY: '50%' }}
+        />
+        <motion.path
+          d="m44 60 11 11 22-24"
+          className="payment-success-check"
+          initial={{ pathLength: reduce ? 1 : 0, opacity: reduce ? 1 : 0, scale: reduce ? 1 : scale.icon, filter: reduce ? 'blur(0px)' : blur.icon }}
+          animate={{
+            pathLength: 1,
+            opacity: 1,
+            scale: 1,
+            filter: 'blur(0px)',
+            transition: { pathLength: checkDraw, opacity: checkPop, scale: checkPop, filter: swap },
+          }}
+          style={{ originX: '50%', originY: '50%' }}
+        />
+      </svg>
+    </motion.div>
   );
 }
 

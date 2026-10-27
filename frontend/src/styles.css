@@ -279,8 +279,24 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .notice-error { border: 1px solid #edcfca; color: #91453c; background: #fbefed; }
 .notice-success { border: 1px solid #d2e3d8; color: #476e5b; background: #edf5ef; }
 .notice > button { margin-left: auto; padding: 3px; display: grid; place-items: center; border: 0; color: currentColor; background: transparent; cursor: pointer; }
-.modal-backdrop { position: fixed; z-index: 10; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(20, 35, 29, .42); }
-.modal-panel { width: min(100%, 520px); max-height: calc(100vh - 40px); max-height: calc(100dvh - 40px); overflow-y: auto; overscroll-behavior: contain; padding: 21px; border: 1px solid #dfe6e1; border-radius: 14px; background: #fbfcfa; box-shadow: 0 20px 60px rgba(22, 41, 32, .2); animation: modal-in 220ms var(--ease) both; }
+.modal-backdrop { position: fixed; z-index: 10; inset: 0; background-color: transparent; }
+.modal-panel { position: fixed; z-index: 11; inset: 0; width: calc(100% - 40px); max-width: 520px; height: fit-content; max-height: calc(100vh - 40px); max-height: calc(100dvh - 40px); overflow-y: auto; overscroll-behavior: contain; margin: auto; padding: 21px; border: 1px solid #dfe6e1; border-radius: 14px; background: #fbfcfa; box-shadow: 0 20px 60px rgba(22, 41, 32, .2); }
+.payment-success-modal { max-width: 390px; padding: 0; overflow: hidden; }
+.payment-success-content { position: relative; display: grid; justify-items: center; gap: 11px; padding: 30px 26px 25px; text-align: center; }
+.payment-success-close { position: absolute; top: 12px; right: 12px; }
+.payment-success-art { width: 136px; height: 136px; margin: 3px 0 0; }
+.payment-success-art svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.payment-success-halo { fill: #edf5ef; stroke: #c8ded0; stroke-width: 1.5; }
+.payment-success-disc { fill: #365548; }
+.payment-success-check { stroke: #fff; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; }
+.payment-success-kicker { color: #648171; font-size: 9px; font-weight: 600; letter-spacing: .12em; }
+.payment-success-content h2 { margin: 0; color: #35493f; font-size: 20px; font-weight: 600; }
+.payment-success-amount { color: #263c31; font-size: 27px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.payment-success-content > p { max-width: 280px; margin: 0; color: #596b60; font-size: 11px; line-height: 1.55; }
+.payment-success-content > p code { color: #435d4e; font-size: 10px; }
+.payment-success-note { display: flex; align-items: center; gap: 7px; margin-top: 2px; color: #4d705d; font-size: 10px; }
+.payment-success-content > small { color: var(--muted); font-size: 9px; }
+.payment-success-content > .button { width: 100%; justify-content: center; margin-top: 3px; }
 .modal-head, .modal-head > div { display: flex; align-items: flex-start; gap: 12px; }
 .modal-head { align-items: center; justify-content: space-between; margin-bottom: 22px; }
 .modal-head .modal-mark { width: 36px; height: 36px; }
@@ -359,7 +375,6 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .line-two { right: 15%; top: 89px; width: 17px; height: 17px; border-color: #e7d5b7; background: #f6ebd9; }
 .line-three { right: 25%; bottom: 68px; width: 13px; height: 13px; border-radius: 50%; border-color: #d4e2d8; background: #e5eee7; }
 
-@keyframes modal-in { from { opacity: 0; transform: translateY(7px) scale(.99); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes qris-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes details-in { from { opacity: .65; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes notice-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
