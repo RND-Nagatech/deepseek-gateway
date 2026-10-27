@@ -48,6 +48,8 @@ interface QrisSearchResult {
   record: QrisTransactionRecord | null;
   matchCount: number;
   complete: boolean;
+  diagnosticId?: string;
+  incompleteReason?: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -115,6 +117,12 @@ function safeDiagnosticText(value: string): string {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 400);
+}
+
+function safePaginationValue(value: unknown): string {
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value);
+  if (typeof value === 'string' && /^\d{1,12}$/.test(value)) return value;
+  return value === null ? 'null' : typeof value;
 }
 
 function providerErrorSummary(body: unknown, responseText: string): string {
@@ -386,7 +394,7 @@ export class SingaPayService {
     } else if (lookup.matchCount > 0 || !lookup.complete) {
       const reason = lookup.matchCount > 1
         ? 'SingaPay menemukan beberapa QRIS yang cocok. Tidak ada QR baru dibuat; perlu pemeriksaan manual.'
-        : 'Pencarian QRIS di SingaPay belum selesai. QR baru tidak dibuat agar tidak terjadi pembayaran ganda.';
+        : `Pencarian QRIS di SingaPay belum selesai. QR baru tidak dibuat agar tidak terjadi pembayaran ganda. Referensi log: ${lookup.diagnosticId ?? 'tidak tersedia'}.`;
       await this.setAttemptState(keyId, merchantRef, 'needs_review', reason);
       throw new ConflictException(reason);
     }
@@ -766,9 +774,15 @@ export class SingaPayService {
     const from = new Date(attempt.createdAt.getTime() - 10 * 60 * 1000);
     const to = new Date(attempt.createdAt.getTime() + 20 * 60 * 1000);
     const matches: QrisTransactionRecord[] = [];
-    let totalPages = 0;
+    const diagnosticId = randomBytes(6).toString('hex');
     let complete = false;
+    let incompleteReason = 'page_limit_reached';
+    let diagnosticPage = 0;
+    let diagnosticDataType = 'unknown';
+    let diagnosticRows: number | null = null;
+    let diagnosticPagination: Record<string, unknown> | null = null;
     for (let page = 1; page <= 20; page += 1) {
+      diagnosticPage = page;
       const query = new URLSearchParams({
         amount: String(attempt.amountIdr),
         type: 'mpm-dynamic',
@@ -783,35 +797,65 @@ export class SingaPayService {
         config.partnerId,
       );
       const envelope = asRecord(response);
-      if (!Array.isArray(envelope?.data)) break;
+      diagnosticDataType = Array.isArray(envelope?.data)
+        ? 'array'
+        : envelope?.data === null ? 'null' : typeof envelope?.data;
+      if (!Array.isArray(envelope?.data)) {
+        incompleteReason = 'data_not_array';
+        break;
+      }
       const rows = envelope.data;
+      diagnosticRows = rows.length;
       for (const row of rows) {
         const candidate = asRecord(row) as QrisTransactionRecord | null;
         if (candidate?.merchant_reff_no === attempt.merchantRef) matches.push(candidate);
       }
       const pagination = asRecord(asRecord(envelope?.meta)?.pagination);
+      diagnosticPagination = pagination;
+      const reportedTotal = pagination?.total;
+      const reportedCount = pagination?.count;
+      const reportedPages = pagination?.total_pages;
+      const isZero = (value: unknown) => value === 0 || value === '0';
+      const isMissingOrZero = (value: unknown) => value === undefined || value === null || isZero(value);
       const emptyResultConfirmed = page === 1
         && matches.length === 0
         && rows.length === 0
-        && (pagination?.total === 0 || pagination?.total === '0')
-        && (pagination?.count === 0 || pagination?.count === '0');
+        && (
+          (isZero(reportedTotal)
+            && isMissingOrZero(reportedCount)
+            && (isMissingOrZero(reportedPages) || reportedPages === 1 || reportedPages === '1'))
+          || (isZero(reportedPages)
+            && isMissingOrZero(reportedTotal)
+            && isMissingOrZero(reportedCount))
+        );
       if (emptyResultConfirmed) {
         complete = true;
         break;
       }
       const reportedTotalPages = Number(pagination?.total_pages);
-      if (!Number.isSafeInteger(reportedTotalPages) || reportedTotalPages < 1) break;
-      totalPages = reportedTotalPages;
-      if (page >= totalPages) {
+      if (!Number.isSafeInteger(reportedTotalPages) || reportedTotalPages < 1) {
+        incompleteReason = 'pagination_missing_or_invalid';
+        break;
+      }
+      if (page >= reportedTotalPages) {
         complete = true;
         break;
       }
-      if (rows.length === 0) break;
+      if (rows.length === 0) {
+        incompleteReason = 'empty_page_before_last_reported_page';
+        break;
+      }
+    }
+    if (!complete) {
+      this.logger.warn(
+        `SingaPay QRIS lookup incomplete; reference=${diagnosticId}; reason=${incompleteReason}; page=${diagnosticPage}; dataType=${diagnosticDataType}; rows=${diagnosticRows ?? 'unknown'}; total=${safePaginationValue(diagnosticPagination?.total)}; count=${safePaginationValue(diagnosticPagination?.count)}; total_pages=${safePaginationValue(diagnosticPagination?.total_pages)}`,
+      );
     }
     return {
       record: matches.length === 1 && complete ? matches[0] : null,
       matchCount: matches.length,
       complete,
+      ...(!complete ? { diagnosticId, incompleteReason } : {}),
     };
   }
 
