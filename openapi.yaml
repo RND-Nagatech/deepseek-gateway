@@ -1,0 +1,385 @@
+openapi: 3.1.0
+info:
+  title: DeepSeek Monitor Self-Service API
+  version: 1.0.0
+  description: |
+    Read-only endpoints for the client and API key represented by the supplied
+    DeepSeek key. The key must be registered and active in DeepSeek Monitor.
+    Token cache hit and cache miss values are details within input tokens;
+    billable tokens are input plus output, so cache tokens are not added twice.
+servers:
+  - url: https://deepseek.nagatech.id
+    description: Configured gateway host
+  - url: http://127.0.0.1:3002
+    description: Local backend
+security:
+  - BearerAuth: []
+  - ApiKeyHeader: []
+tags:
+  - name: Account
+    description: Balance and usage information for the authenticated API key
+paths:
+  /api/v1/me/balance:
+    get:
+      operationId: getMyBalance
+      tags: [Account]
+      summary: Get the authenticated key's prepaid balance
+      responses:
+        '200':
+          description: Current balance and request eligibility
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalanceResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/me/usage:
+    get:
+      operationId: listMyUsage
+      tags: [Account]
+      summary: List usage events for the authenticated API key
+      description: |
+        Results are ordered newest first. Use nextCursor from the response as
+        cursor on the next request, keeping the same from/to filters. The to
+        timestamp is exclusive.
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - name: limit
+          in: query
+          description: Maximum events to return in one page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          description: Opaque cursor returned by the previous page
+          schema:
+            type: string
+            maxLength: 2048
+      responses:
+        '200':
+          description: A page of usage events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsagePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/me/usage/summary:
+    get:
+      operationId: getMyUsageSummary
+      tags: [Account]
+      summary: Get aggregate usage and daily totals
+      description: |
+        If from and to are omitted, the summary covers the last 30 days through
+        the current time. If only one boundary is supplied, the other defaults
+        to the current time or a 30-day interval. The maximum period is 366 days.
+        Daily request totals include all events; token and cost totals include
+        confirmed events. Daily buckets use Asia/Jakarta.
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: Usage totals for the authenticated API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: The registered DeepSeek API key used with the gateway
+    ApiKeyHeader:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: The same registered DeepSeek API key
+  parameters:
+    From:
+      name: from
+      in: query
+      description: Inclusive ISO 8601 timestamp
+      schema:
+        type: string
+        format: date-time
+    To:
+      name: to
+      in: query
+      description: Exclusive ISO 8601 timestamp
+      schema:
+        type: string
+        format: date-time
+  responses:
+    BadRequest:
+      description: Invalid date range or usage cursor
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing, unregistered, revoked, or inactive API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServiceUnavailable:
+      description: The monitoring database is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalServerError:
+      description: The request could not be completed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      properties:
+        statusCode:
+          type: integer
+        message:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        error:
+          type: string
+      required: [statusCode, message]
+    TopUp:
+      type: [object, 'null']
+      properties:
+        amountIdr:
+          type: number
+        createdAt:
+          type: string
+          format: date-time
+      required: [amountIdr, createdAt]
+    BalanceResponse:
+      type: object
+      properties:
+        account:
+          type: object
+          properties:
+            clientId:
+              type: string
+            clientName:
+              type: string
+            keyId:
+              type: string
+            keyHint:
+              type: string
+          required: [clientId, clientName, keyId, keyHint]
+        balanceIdr:
+          type: number
+          description: Current key balance; may be negative after a request is charged
+        currency:
+          type: string
+          const: IDR
+        minimumBalanceForRequestIdr:
+          type: number
+          const: 10
+        canMakeRequest:
+          type: boolean
+          description: True when the balance is at least Rp10 and the key/client are active
+        status:
+          type: object
+          properties:
+            client:
+              type: string
+              enum: [active, paused]
+            key:
+              type: string
+              enum: [active, revoked]
+          required: [client, key]
+        topUps:
+          type: object
+          properties:
+            count:
+              type: integer
+            last:
+              $ref: '#/components/schemas/TopUp'
+          required: [count, last]
+      required: [account, balanceIdr, currency, minimumBalanceForRequestIdr, canMakeRequest, status, topUps]
+    UsageEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        requestId:
+          type: string
+        path:
+          type: string
+        method:
+          type: string
+        model:
+          type: [string, 'null']
+        statusCode:
+          type: [integer, 'null']
+        usageStatus:
+          type: string
+          enum: [pending, confirmed, unavailable, not_metered, insufficient_balance]
+        inputTokens:
+          type: [integer, 'null']
+        cacheHitTokens:
+          type: [integer, 'null']
+          description: Breakdown within inputTokens; do not add again to billableTokens
+        cacheMissTokens:
+          type: [integer, 'null']
+          description: Breakdown within inputTokens; do not add again to billableTokens
+        outputTokens:
+          type: [integer, 'null']
+        totalTokens:
+          type: [integer, 'null']
+        billableTokens:
+          type: [integer, 'null']
+          description: Input tokens plus output tokens
+        costIdr:
+          type: [number, 'null']
+        pricePerMillionIdr:
+          type: [number, 'null']
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: [string, 'null']
+          format: date-time
+        latencyMs:
+          type: [integer, 'null']
+      required:
+        - id
+        - requestId
+        - path
+        - method
+        - model
+        - statusCode
+        - usageStatus
+        - inputTokens
+        - cacheHitTokens
+        - cacheMissTokens
+        - outputTokens
+        - totalTokens
+        - billableTokens
+        - costIdr
+        - pricePerMillionIdr
+        - startedAt
+        - finishedAt
+        - latencyMs
+    UsagePage:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/UsageEvent'
+        pagination:
+          type: object
+          properties:
+            limit:
+              type: integer
+            nextCursor:
+              type: [string, 'null']
+          required: [limit, nextCursor]
+      required: [data, pagination]
+    UsageSummary:
+      type: object
+      properties:
+        period:
+          type: object
+          properties:
+            from:
+              type: string
+              format: date-time
+            to:
+              type: string
+              format: date-time
+            timeZone:
+              type: string
+              const: Asia/Jakarta
+          required: [from, to, timeZone]
+        totals:
+          type: object
+          properties:
+            requests:
+              type: integer
+            errors:
+              type: integer
+            confirmedRequests:
+              type: integer
+            tokens:
+              type: object
+              properties:
+                input:
+                  type: integer
+                cacheHit:
+                  type: integer
+                  description: Included within input; informational breakdown only
+                cacheMiss:
+                  type: integer
+                  description: Included within input; informational breakdown only
+                output:
+                  type: integer
+                billable:
+                  type: integer
+                  description: Input plus output; cache values are not added a second time
+              required: [input, cacheHit, cacheMiss, output, billable]
+            costIdr:
+              type: number
+          required: [requests, errors, confirmedRequests, tokens, costIdr]
+        byStatus:
+          type: object
+          properties:
+            pending:
+              type: integer
+            confirmed:
+              type: integer
+            unavailable:
+              type: integer
+            not_metered:
+              type: integer
+            insufficient_balance:
+              type: integer
+          required: [pending, confirmed, unavailable, not_metered, insufficient_balance]
+        series:
+          type: array
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+                format: date
+              requests:
+                type: integer
+              tokens:
+                type: integer
+              costIdr:
+                type: number
+            required: [date, requests, tokens, costIdr]
+      required: [period, totals, byStatus, series]

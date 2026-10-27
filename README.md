@@ -8,6 +8,7 @@ The project has two separate apps:
 - `frontend/` — React and Vite dashboard.
 
 For instructions on moving existing DeepSeek clients behind the gateway, see [MIGRASI_KE_GATEWAY.md](MIGRASI_KE_GATEWAY.md).
+For balance and usage endpoints for other applications, see [openapi.yaml](openapi.yaml).
 
 ## Requirements
 
@@ -65,6 +66,23 @@ http://127.0.0.1:3002/proxy
 The SDK appends its normal endpoint path, such as `/chat/completions` or `/responses`. The gateway records the request and streams the provider response back to the caller. Token usage is taken from DeepSeek's response when present; cache hit and cache miss are shown as input details and are not counted a second time.
 
 Requests must pass through the gateway to appear in this dashboard. This development server binds to loopback by default. Before making it reachable by other machines, set a strong `ADMIN_TOKEN` and `KEY_HASH_SECRET`, use TLS, and restrict access to the dashboard/admin API.
+
+## Read balance and usage from another application
+
+The self-service API uses the same registered DeepSeek key as the proxy. It only returns data for the key sent with the request, even when its client has other keys. Send the registered key with the Authorization header using the Bearer scheme, or use the x-api-key header. Keep this key in a trusted server-side environment.
+
+- GET /api/v1/me/balance returns the current rupiah balance, latest top-up, and whether the key can make a request. A balance below Rp10 is blocked by the proxy; a later usage charge can make the balance negative.
+- GET /api/v1/me/usage/summary returns request/status totals, token totals, cost, and a daily series. It defaults to the last 30 days.
+- GET /api/v1/me/usage returns individual request records. Use limit (up to 100), optional ISO 8601 from/to filters (to is exclusive), and the returned nextCursor to fetch more records.
+
+For example, set GATEWAY_URL to https://deepseek.nagatech.id and DEEPSEEK_API_KEY to the registered key, then call:
+
+    curl "$GATEWAY_URL/api/v1/me/balance" \
+      -H "Authorization: Bearer $DEEPSEEK_API_KEY"
+    curl "$GATEWAY_URL/api/v1/me/usage/summary" \
+      -H "Authorization: Bearer $DEEPSEEK_API_KEY"
+
+For browser-based consumers, configure CORS_ORIGINS in backend/.env as a comma-separated list of trusted origins, for example https://dashboard.example.com. Server-to-server consumers do not need a CORS entry.
 
 ## Pricing
 

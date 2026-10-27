@@ -3,6 +3,7 @@ import { FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { ClientsService } from '../clients/clients.service';
+import { MINIMUM_BALANCE_MICROS_IDR } from '../clients/balance';
 import { PricingService } from '../pricing/pricing.service';
 import { findUsageInPayload } from '../pricing/token-usage';
 import { UsageService } from '../usage/usage.service';
@@ -16,8 +17,6 @@ const RESPONSE_HOP_HEADERS = new Set([
   'connection', 'keep-alive', 'transfer-encoding', 'content-length', 'content-encoding',
   'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'upgrade',
 ]);
-const MINIMUM_BALANCE_MICROS_IDR = 10_000_000n;
-
 function headerString(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value.join(', ') : value;
 }

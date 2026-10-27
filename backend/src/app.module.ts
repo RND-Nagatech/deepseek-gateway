@@ -5,6 +5,7 @@ import { GatewayModule } from './gateway/gateway.module';
 import { HealthController } from './health.controller';
 import { PricingModule } from './pricing/pricing.module';
 import { UsageModule } from './usage/usage.module';
+import { PublicApiModule } from './public-api/public-api.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { UsageModule } from './usage/usage.module';
     ClientsModule,
     PricingModule,
     UsageModule,
+    PublicApiModule,
     GatewayModule,
   ],
   controllers: [HealthController],

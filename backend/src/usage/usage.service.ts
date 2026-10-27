@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { UsageEvent, UsageEventDocument } from '../common/schemas';
@@ -12,6 +12,52 @@ interface StartEvent {
   method: string;
   model: string | null;
   startedAt: Date;
+}
+
+interface UsageRange {
+  from?: Date;
+  to?: Date;
+}
+
+interface UsageListQuery extends UsageRange {
+  limit: number;
+  cursor?: string;
+}
+
+interface UsageCursor {
+  startedAt: Date;
+  id: Types.ObjectId;
+}
+
+const USAGE_STATUSES = ['pending', 'confirmed', 'unavailable', 'not_metered', 'insufficient_balance'] as const;
+const MAX_SUMMARY_RANGE_MS = 366 * 24 * 60 * 60 * 1000;
+
+function parseUsageCursor(cursor: string): UsageCursor {
+  try {
+    const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { startedAt?: unknown; id?: unknown };
+    const startedAt = new Date(String(decoded.startedAt ?? ''));
+    if (!Number.isFinite(startedAt.getTime()) || typeof decoded.id !== 'string' || !Types.ObjectId.isValid(decoded.id)) {
+      throw new Error('invalid cursor');
+    }
+    return { startedAt, id: new Types.ObjectId(decoded.id) };
+  } catch {
+    throw new BadRequestException('The usage cursor is invalid.');
+  }
+}
+
+function encodeUsageCursor(row: { _id: Types.ObjectId; startedAt: Date }): string {
+  return Buffer.from(JSON.stringify({ startedAt: row.startedAt.toISOString(), id: String(row._id) })).toString('base64url');
+}
+
+function rangeFilter(range: UsageRange): Record<string, Date> | undefined {
+  if (range.from && range.to && range.from >= range.to) {
+    throw new BadRequestException('The from value must be earlier than the to value.');
+  }
+  if (!range.from && !range.to) return undefined;
+  return {
+    ...(range.from ? { $gte: range.from } : {}),
+    ...(range.to ? { $lt: range.to } : {}),
+  };
 }
 
 @Injectable()
@@ -145,6 +191,150 @@ export class UsageService {
       finishedAt: row.finishedAt,
       latencyMs: row.latencyMs,
     }));
+  }
+
+  async listForKey(keyId: Types.ObjectId, query: UsageListQuery) {
+    const startedAt = rangeFilter(query);
+    const clauses: Record<string, unknown>[] = [{ keyId }];
+    if (startedAt) clauses.push({ startedAt });
+    if (query.cursor) {
+      const cursor = parseUsageCursor(query.cursor);
+      clauses.push({
+        $or: [
+          { startedAt: { $lt: cursor.startedAt } },
+          { startedAt: cursor.startedAt, _id: { $lt: cursor.id } },
+        ],
+      });
+    }
+
+    const limit = Math.min(100, Math.max(1, Math.floor(query.limit)));
+    const rows = await this.events.find({ $and: clauses })
+      .sort({ startedAt: -1, _id: -1 })
+      .limit(limit + 1)
+      .lean()
+      .exec();
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit);
+
+    return {
+      data: page.map((row: any) => ({
+        id: String(row._id),
+        requestId: row.requestId,
+        path: row.path,
+        method: row.method,
+        model: row.model,
+        statusCode: row.statusCode,
+        usageStatus: row.usageStatus,
+        inputTokens: row.inputTokens,
+        cacheHitTokens: row.cacheHitTokens,
+        cacheMissTokens: row.cacheMissTokens,
+        outputTokens: row.outputTokens,
+        totalTokens: row.totalTokens,
+        billableTokens: row.billableTokens,
+        costIdr: row.costMicrosIdr == null ? null : microsIdrToRupiah(row.costMicrosIdr),
+        pricePerMillionIdr: row.pricePerMillionIdr,
+        startedAt: row.startedAt,
+        finishedAt: row.finishedAt,
+        latencyMs: row.latencyMs,
+      })),
+      pagination: {
+        limit,
+        nextCursor: hasMore ? encodeUsageCursor(page[page.length - 1]) : null,
+      },
+    };
+  }
+
+  async summaryForKey(keyId: Types.ObjectId, range: UsageRange & { defaultDays?: number }) {
+    const to = range.to ?? new Date();
+    const from = range.from ?? new Date(to.getTime() - (range.defaultDays ?? 30) * 24 * 60 * 60 * 1000);
+    if (from >= to) throw new BadRequestException('The from value must be earlier than the to value.');
+    if (to.getTime() - from.getTime() > MAX_SUMMARY_RANGE_MS) {
+      throw new BadRequestException('The summary date range cannot exceed 366 days.');
+    }
+    const filter = { keyId, startedAt: { $gte: from, $lt: to } };
+
+    const [statusRows, usageRows, seriesRows] = await Promise.all([
+      this.events.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: '$usageStatus',
+            requests: { $sum: 1 },
+            errors: { $sum: { $cond: [{ $gte: [{ $ifNull: ['$statusCode', 0] }, 400] }, 1, 0] } },
+          },
+        },
+      ]).exec(),
+      this.events.aggregate([
+        { $match: { ...filter, usageStatus: 'confirmed' } },
+        {
+          $group: {
+            _id: null,
+            inputTokens: { $sum: '$inputTokens' },
+            cacheHitTokens: { $sum: '$cacheHitTokens' },
+            cacheMissTokens: { $sum: '$cacheMissTokens' },
+            outputTokens: { $sum: '$outputTokens' },
+            billableTokens: { $sum: '$billableTokens' },
+            costMicrosIdr: { $sum: '$costMicrosIdr' },
+          },
+        },
+      ]).exec(),
+      this.events.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$startedAt', timezone: 'Asia/Jakarta' } },
+            requests: { $sum: 1 },
+            tokens: { $sum: { $cond: [{ $eq: ['$usageStatus', 'confirmed'] }, '$billableTokens', 0] } },
+            costMicrosIdr: { $sum: { $cond: [{ $eq: ['$usageStatus', 'confirmed'] }, '$costMicrosIdr', 0] } },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]).exec(),
+    ]);
+
+    const byStatus = Object.fromEntries(USAGE_STATUSES.map((status) => [status, 0])) as Record<typeof USAGE_STATUSES[number], number>;
+    let requests = 0;
+    let errors = 0;
+    for (const row of statusRows as Array<{ _id: string; requests: number; errors: number }>) {
+      if (USAGE_STATUSES.includes(row._id as typeof USAGE_STATUSES[number])) {
+        byStatus[row._id as typeof USAGE_STATUSES[number]] = row.requests;
+      }
+      requests += row.requests;
+      errors += row.errors;
+    }
+
+    const totals = usageRows[0] ?? {
+      inputTokens: 0,
+      cacheHitTokens: 0,
+      cacheMissTokens: 0,
+      outputTokens: 0,
+      billableTokens: 0,
+      costMicrosIdr: 0,
+    };
+
+    return {
+      period: { from: from.toISOString(), to: to.toISOString(), timeZone: 'Asia/Jakarta' },
+      totals: {
+        requests,
+        errors,
+        confirmedRequests: byStatus.confirmed,
+        tokens: {
+          input: totals.inputTokens ?? 0,
+          cacheHit: totals.cacheHitTokens ?? 0,
+          cacheMiss: totals.cacheMissTokens ?? 0,
+          output: totals.outputTokens ?? 0,
+          billable: totals.billableTokens ?? 0,
+        },
+        costIdr: microsIdrToRupiah(totals.costMicrosIdr),
+      },
+      byStatus,
+      series: seriesRows.map((row: any) => ({
+        date: row._id,
+        requests: row.requests ?? 0,
+        tokens: row.tokens ?? 0,
+        costIdr: microsIdrToRupiah(row.costMicrosIdr),
+      })),
+    };
   }
 
   async overview(days: number) {
