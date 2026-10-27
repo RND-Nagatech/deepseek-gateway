@@ -24,6 +24,10 @@ const navigation: Array<{ id: View; label: string; icon: IconName }> = [
   { id: 'pricing', label: 'Tarif', icon: 'pricing' },
 ];
 
+function formatTopUpAmountInput(amount: string) {
+  return amount.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+
 type ModalState =
   | { mode: 'new-client' }
   | { mode: 'add-key'; client: Client }
@@ -97,6 +101,21 @@ export function App() {
   const dialogRef = useRef<HTMLElement | null>(null);
   const modalTriggerRef = useRef<HTMLElement | null>(null);
   const successModalTimerRef = useRef<number | null>(null);
+
+  function updateTopUpAmount(event: FormEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const typedValue = input.value;
+    const cursorPosition = input.selectionStart ?? typedValue.length;
+    const digitsBeforeCursor = typedValue.slice(0, cursorPosition).replace(/\D/g, '').length;
+    const digits = typedValue.replace(/\D/g, '');
+    const formatted = formatTopUpAmountInput(digits);
+    const nextCursorPosition = formatTopUpAmountInput(digits.slice(0, digitsBeforeCursor)).length;
+
+    setTopUpAmount(digits);
+    window.requestAnimationFrame(() => {
+      if (input.value === formatted) input.setSelectionRange(nextCursorPosition, nextCursorPosition);
+    });
+  }
 
   function openModal(nextModal: Exclude<ModalState, null>) {
     modalTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -699,7 +718,7 @@ export function App() {
               {modalNeedsAmount && modal.mode === 'top-up' && existingTopUpLoading && <div className="payment-loading" role="status">Memeriksa pembayaran yang masih perlu ditangani…</div>}
               {modal.mode === 'top-up' && !existingTopUpLoading && <>
                 <label>Jumlah top-up
-                  <div className="rupiah-input"><span>Rp</span><input autoFocus inputMode="numeric" type="number" min={topUpMinimum} max="1000000000" step="1" required value={topUpAmount} onChange={(event) => setTopUpAmount(event.target.value)} placeholder="50000" /><small>{topUpMethod === 'va' ? 'Minimum Rp10.000 · saldo khusus key ini' : 'Saldo khusus key ini'}</small></div>
+                  <div className="rupiah-input"><span>Rp</span><input autoFocus inputMode="numeric" type="text" maxLength={13} required value={formatTopUpAmountInput(topUpAmount)} onChange={updateTopUpAmount} placeholder="50.000" /><small>{topUpMethod === 'va' ? 'Minimum Rp10.000 · saldo khusus key ini' : 'Saldo khusus key ini'}</small></div>
                 </label>
                 <label>Metode pembayaran
                   <select value={topUpMethod} onChange={(event) => setTopUpMethod(event.target.value as TopUpMethod)}>
