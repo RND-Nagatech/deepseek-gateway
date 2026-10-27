@@ -22,6 +22,8 @@ export interface KeyTopUp {
   expiresAt?: Date | null;
   paidAt?: Date | null;
   reviewReason?: string | null;
+  retryAllowed?: boolean;
+  retryOfMerchantRef?: string | null;
 }
 
 @Schema({ timestamps: true, collection: 'clients' })
@@ -72,6 +74,8 @@ export class ClientKey {
       expiresAt: { type: Date, default: null },
       paidAt: { type: Date, default: null },
       reviewReason: { type: String, default: null },
+      retryAllowed: { type: Boolean, default: false },
+      retryOfMerchantRef: { type: String, default: null },
     }],
     default: [],
   })

@@ -159,4 +159,19 @@ export class PublicApiController {
       identity.client._id as Types.ObjectId,
     );
   }
+
+  @Post('topups/:merchantRef/retry')
+  retryTopUp(
+    @Req() request: GatewayApiRequest,
+    @Param('merchantRef') merchantRef: string,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const identity = request.gatewayApiIdentity!;
+    return this.singaPay.retryQrisTopUp(
+      identity.key._id as Types.ObjectId,
+      merchantRef,
+      idempotencyKey ?? '',
+      identity.client._id as Types.ObjectId,
+    );
+  }
 }

@@ -13,8 +13,10 @@ import { Model, Types } from 'mongoose';
 import { Client, ClientKey, ClientKeyDocument, KeyTopUp, SingaPayWebhookEvent, SingaPayWebhookEventDocument } from '../common/schemas';
 import { rupiahToMicroIdr } from '../clients/balance';
 
-const PENDING_STATUSES = ['creating', 'pending', 'expired', 'needs_review'];
-const ACTIVE_TOPUP_STATUSES = ['creating', 'pending', 'needs_review'];
+const PENDING_STATUSES = ['creating', 'pending', 'expired', 'needs_review', 'failed'];
+const RESUMABLE_TOPUP_STATUSES = ['creating', 'pending', 'needs_review', 'expired', 'failed'];
+const REQUEST_IN_PROGRESS_STATUSES = ['creating', 'pending'];
+const RETRYABLE_ATTEMPT_STATUSES = ['needs_review', 'expired', 'failed'];
 const DEFAULT_QR_LIFETIME_MS = 60 * 60 * 1000;
 
 type TopUpStatus = NonNullable<KeyTopUp['status']>;
@@ -34,6 +36,18 @@ interface QrisResponse {
   status?: string;
   qr_data?: string;
   expired_at?: string;
+}
+
+type QrisTransactionRecord = QrisResponse & {
+  amount?: number;
+  is_expired?: boolean;
+  status_computed?: string;
+};
+
+interface QrisSearchResult {
+  record: QrisTransactionRecord | null;
+  matchCount: number;
+  complete: boolean;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -144,11 +158,12 @@ export class SingaPayService {
     amountIdr: number,
     idempotencyKey: string,
     clientId?: Types.ObjectId | string,
+    retryOfMerchantRef?: string,
   ) {
     this.validateIdempotencyKey(idempotencyKey);
     const existing = await this.findAttempt(keyId, { idempotencyKey }, clientId);
     if (existing) return this.reuseIdempotentAttempt(existing, amountIdr);
-    const active = await this.findActiveAttempt(keyId, clientId);
+    const active = await this.findBlockingAttempt(keyId, clientId);
     if (active) {
       throw new ConflictException(`Top-up ${active.merchantRef ?? ''} masih aktif. Periksa status QRIS yang ada sebelum membuat top-up baru.`);
     }
@@ -169,7 +184,14 @@ export class SingaPayService {
         ...(clientId ? { clientId } : {}),
         $and: [
           { topUps: { $not: { $elemMatch: { idempotencyKey } } } },
-          { topUps: { $not: { $elemMatch: { source: 'singapay', status: { $in: ACTIVE_TOPUP_STATUSES } } } } },
+          { topUps: { $not: { $elemMatch: { source: 'singapay', status: { $in: REQUEST_IN_PROGRESS_STATUSES } } } } },
+          { topUps: { $not: { $elemMatch: { source: 'singapay', status: { $in: RETRYABLE_ATTEMPT_STATUSES }, retryAllowed: { $ne: true } } } } },
+          ...(retryOfMerchantRef ? [{ topUps: { $elemMatch: {
+            merchantRef: retryOfMerchantRef,
+            source: 'singapay',
+            status: { $in: RETRYABLE_ATTEMPT_STATUSES },
+            retryAllowed: true,
+          } } }] : []),
         ],
       },
       {
@@ -182,6 +204,7 @@ export class SingaPayService {
             method: 'qris',
             merchantRef,
             idempotencyKey,
+            ...(retryOfMerchantRef ? { retryOfMerchantRef } : {}),
             expiresAt,
           },
         },
@@ -192,9 +215,14 @@ export class SingaPayService {
     if (!reserved) {
       const concurrentAttempt = await this.findAttempt(keyId, { idempotencyKey }, clientId);
       if (concurrentAttempt) return this.reuseIdempotentAttempt(concurrentAttempt, amountIdr);
-      const otherActiveAttempt = await this.findActiveAttempt(keyId, clientId);
+      const otherActiveAttempt = await this.findBlockingAttempt(keyId, clientId);
       if (otherActiveAttempt) {
         throw new ConflictException(`Top-up ${otherActiveAttempt.merchantRef ?? ''} masih aktif. Periksa status QRIS yang ada sebelum membuat top-up baru.`);
+      }
+      if (retryOfMerchantRef) {
+        const previousAttempt = await this.findAttempt(keyId, { merchantRef: retryOfMerchantRef }, clientId);
+        if (previousAttempt?.status === 'paid') return this.toView(previousAttempt);
+        throw new ConflictException('Status pembayaran lama berubah saat QR baru disiapkan. Muat ulang status sebelum mencoba lagi.');
       }
       if (!(await this.keys.exists({ _id: keyId, ...(clientId ? { clientId } : {}) }))) {
         throw new NotFoundException('API key not found for this client.');
@@ -290,32 +318,136 @@ export class SingaPayService {
   async reconcileTopUp(keyId: Types.ObjectId | string, merchantRef: string, clientId?: Types.ObjectId | string) {
     const attempt = await this.findAttempt(keyId, { merchantRef }, clientId);
     if (!attempt) throw new NotFoundException('Top-up tidak ditemukan untuk API key ini.');
-    if (attempt.status === 'paid' || attempt.status === 'failed') {
+    if (attempt.status === 'paid') {
       return this.toView(attempt);
     }
 
     const config = this.getConfig();
     const token = await this.getAccessToken(config);
-    let providerRecord: QrisResponse & { amount?: number; is_expired?: boolean; status_computed?: string } | null;
-    if (attempt.providerTransactionId) {
-      const response = await this.getProviderJson(
-        `${config.baseUrl}/api/v1.0/qris-dynamic/${encodeURIComponent(config.accountId)}/show/${encodeURIComponent(attempt.providerTransactionId)}`,
-        token,
-        config.partnerId,
-      );
-      providerRecord = asRecord(asRecord(response)?.data) as typeof providerRecord;
-    } else {
-      providerRecord = await this.findQrisByMerchantReference(config, token, attempt);
-    }
-
+    const lookup = await this.lookupProviderRecord(config, token, attempt);
+    const providerRecord = lookup.record;
     if (!providerRecord || providerRecord.merchant_reff_no !== merchantRef) {
-      await this.setAttemptState(keyId, merchantRef, 'needs_review', 'SingaPay belum menemukan satu QRIS yang pasti untuk referensi ini. Jangan buat pembayaran baru dulu.');
+      const reason = lookup.matchCount > 1
+        ? 'SingaPay menemukan beberapa QRIS yang cocok. Tidak ada QR baru dibuat; perlu pemeriksaan manual.'
+        : !lookup.complete
+          ? 'Pencarian QRIS di SingaPay belum selesai. Periksa lagi sebelum membuat QR baru.'
+          : 'SingaPay belum menemukan QR untuk referensi ini. Anda dapat mencoba buat QR baru; transaksi lama yang ternyata dibayar tetap akan dikreditkan jika callback masuk.';
+      await this.setAttemptState(keyId, merchantRef, 'needs_review', reason);
       return this.getTopUp(keyId, merchantRef, clientId);
     }
     if (Number(providerRecord.amount) !== attempt.amountIdr) {
       await this.setAttemptState(keyId, merchantRef, 'needs_review', 'Nominal pada transaksi SingaPay tidak cocok dengan top-up.');
       return this.getTopUp(keyId, merchantRef, clientId);
     }
+
+    return this.applyProviderRecord(keyId, merchantRef, clientId, attempt, providerRecord);
+  }
+
+  async retryQrisTopUp(
+    keyId: Types.ObjectId | string,
+    merchantRef: string,
+    idempotencyKey: string,
+    clientId?: Types.ObjectId | string,
+  ) {
+    this.validateIdempotencyKey(idempotencyKey);
+    const attempt = await this.findAttempt(keyId, { merchantRef }, clientId);
+    if (!attempt) throw new NotFoundException('Top-up tidak ditemukan untuk API key ini.');
+
+    const existingRetry = await this.findAttempt(keyId, { idempotencyKey }, clientId);
+    if (existingRetry) {
+      if (existingRetry.retryOfMerchantRef !== merchantRef) {
+        throw new ConflictException('Idempotency-Key sudah digunakan untuk top-up lain. Gunakan key baru untuk percobaan ini.');
+      }
+      return this.reuseIdempotentAttempt(existingRetry, attempt.amountIdr);
+    }
+
+    if (attempt.status === 'paid') return this.toView(attempt);
+    const retryableReview = attempt.status === 'needs_review' && !attempt.qrData;
+    const retryableExpired = attempt.status === 'expired';
+    const retryableFailed = attempt.status === 'failed' && !attempt.qrData;
+    if (!retryableReview && !retryableExpired && !retryableFailed) {
+      throw new ConflictException('QRIS ini masih tersedia atau tidak memerlukan percobaan ulang. Periksa statusnya sebelum membuat QR baru.');
+    }
+
+    const config = this.getConfig();
+    const token = await this.getAccessToken(config);
+    const lookup = await this.lookupProviderRecord(config, token, attempt);
+    const providerRecord = lookup.record;
+    let statusToRelease: TopUpStatus = attempt.status ?? 'pending';
+
+    if (providerRecord && providerRecord.merchant_reff_no === merchantRef) {
+      if (Number(providerRecord.amount) !== attempt.amountIdr) {
+        await this.setAttemptState(keyId, merchantRef, 'needs_review', 'Nominal pada transaksi SingaPay tidak cocok dengan top-up. QR baru tidak dibuat.');
+        throw new ConflictException('Nominal QRIS di SingaPay tidak cocok; QR baru tidak dibuat.');
+      }
+      const current = await this.applyProviderRecord(keyId, merchantRef, clientId, attempt, providerRecord);
+      if (current.status !== 'expired') return current;
+      statusToRelease = 'expired';
+    } else if (lookup.matchCount > 0 || !lookup.complete) {
+      const reason = lookup.matchCount > 1
+        ? 'SingaPay menemukan beberapa QRIS yang cocok. Tidak ada QR baru dibuat; perlu pemeriksaan manual.'
+        : 'Pencarian QRIS di SingaPay belum selesai. QR baru tidak dibuat agar tidak terjadi pembayaran ganda.';
+      await this.setAttemptState(keyId, merchantRef, 'needs_review', reason);
+      throw new ConflictException(reason);
+    }
+
+    const reviewOnly = statusToRelease === 'needs_review' || statusToRelease === 'failed';
+    const released = await this.keys.updateOne(
+      {
+        _id: keyId,
+        topUps: { $elemMatch: {
+          merchantRef,
+          source: 'singapay',
+          amountIdr: attempt.amountIdr,
+          status: statusToRelease,
+          ...(reviewOnly ? { qrData: null } : {}),
+        } },
+      },
+      {
+        $set: {
+          'topUps.$[payment].retryAllowed': true,
+          'topUps.$[payment].reviewReason': 'Pemeriksaan SingaPay selesai. QR pengganti hanya dibuat setelah transaksi lama tidak ditemukan atau dinyatakan kedaluwarsa.',
+        },
+      },
+      { arrayFilters: [{
+        'payment.merchantRef': merchantRef,
+        'payment.status': statusToRelease,
+        ...(reviewOnly ? { 'payment.qrData': null } : {}),
+      }] },
+    ).exec();
+    if (released.matchedCount !== 1) {
+      const latest = await this.findAttempt(keyId, { merchantRef }, clientId);
+      if (latest?.status === 'paid' || (latest?.status === 'pending' && latest.qrData)) return this.toView(latest);
+      throw new ConflictException('Status top-up berubah saat diperiksa. Muat ulang status sebelum mencoba lagi.');
+    }
+
+    return this.createQrisTopUp(keyId, attempt.amountIdr, idempotencyKey, clientId, merchantRef);
+  }
+
+  private async lookupProviderRecord(
+    config: SingaPayConfig,
+    token: string,
+    attempt: KeyTopUp,
+  ): Promise<QrisSearchResult> {
+    if (!attempt.merchantRef) return { record: null, matchCount: 0, complete: false };
+    if (!attempt.providerTransactionId) return this.findQrisByMerchantReference(config, token, attempt);
+
+    const response = await this.getProviderJson(
+      `${config.baseUrl}/api/v1.0/qris-dynamic/${encodeURIComponent(config.accountId)}/show/${encodeURIComponent(attempt.providerTransactionId)}`,
+      token,
+      config.partnerId,
+    );
+    const record = asRecord(asRecord(response)?.data) as QrisTransactionRecord | null;
+    return { record, matchCount: record ? 1 : 0, complete: record !== null };
+  }
+
+  private async applyProviderRecord(
+    keyId: Types.ObjectId | string,
+    merchantRef: string,
+    clientId: Types.ObjectId | string | undefined,
+    attempt: KeyTopUp,
+    providerRecord: QrisTransactionRecord,
+  ) {
 
     const providerStatus = String(providerRecord.status_computed ?? providerRecord.status ?? '').toLowerCase();
     const isPaid = providerStatus === 'paid' || providerStatus === 'success';
@@ -340,9 +472,11 @@ export class SingaPayService {
           await this.setAttemptState(keyId, merchantRef, 'needs_review', 'SingaPay menunjukkan pembayaran lunas, tetapi saldo belum dapat dikredit otomatis.');
         }
       }
+    } else if (!isExpired && !qrData) {
+      await this.setAttemptState(keyId, merchantRef, 'needs_review', 'Transaksi ditemukan di SingaPay, tetapi data QR tidak tersedia. QR baru tidak dibuat.');
     } else {
       await this.keys.updateOne(
-        { _id: keyId, topUps: { $elemMatch: { merchantRef, status: { $in: ACTIVE_TOPUP_STATUSES } } } },
+        { _id: keyId, topUps: { $elemMatch: { merchantRef, status: { $in: PENDING_STATUSES } } } },
         {
           $set: {
             'topUps.$[payment].status': isExpired ? 'expired' : 'pending',
@@ -351,9 +485,10 @@ export class SingaPayService {
             'topUps.$[payment].qrData': qrData,
             'topUps.$[payment].expiresAt': expiresAt,
             'topUps.$[payment].reviewReason': null,
+            'topUps.$[payment].retryAllowed': false,
           },
         },
-        { arrayFilters: [{ 'payment.merchantRef': merchantRef, 'payment.status': { $in: ACTIVE_TOPUP_STATUSES } }] },
+        { arrayFilters: [{ 'payment.merchantRef': merchantRef, 'payment.status': { $in: PENDING_STATUSES } }] },
       ).exec();
     }
     return this.getTopUp(keyId, merchantRef, clientId);
@@ -587,8 +722,20 @@ export class SingaPayService {
   private async findActiveAttempt(keyId: Types.ObjectId | string, clientId?: Types.ObjectId | string) {
     const key = await this.keys.findOne({ _id: keyId, ...(clientId ? { clientId } : {}) }).select('topUps').lean().exec();
     if (!key) return null;
-    return [...(key.topUps ?? [])].reverse().find((item) => item.source === 'singapay'
-      && ACTIVE_TOPUP_STATUSES.includes(item.status ?? 'pending')) ?? null;
+    const latestAttempt = [...(key.topUps ?? [])].reverse().find((item) => item.source === 'singapay');
+    if (!latestAttempt || !RESUMABLE_TOPUP_STATUSES.includes(latestAttempt.status ?? 'pending')) return null;
+    return latestAttempt;
+  }
+
+  private async findBlockingAttempt(keyId: Types.ObjectId | string, clientId?: Types.ObjectId | string) {
+    const key = await this.keys.findOne({ _id: keyId, ...(clientId ? { clientId } : {}) }).select('topUps').lean().exec();
+    if (!key) return null;
+    return [...(key.topUps ?? [])].reverse().find((item) => {
+      if (item.source !== 'singapay') return false;
+      const status = item.status ?? 'pending';
+      return REQUEST_IN_PROGRESS_STATUSES.includes(status)
+        || (RETRYABLE_ATTEMPT_STATUSES.includes(status) && item.retryAllowed !== true);
+    }) ?? null;
   }
 
   private async getProviderJson(url: string, accessToken: string, partnerId: string): Promise<unknown> {
@@ -614,12 +761,14 @@ export class SingaPayService {
     config: SingaPayConfig,
     accessToken: string,
     attempt: KeyTopUp,
-  ): Promise<(QrisResponse & { amount?: number; is_expired?: boolean; status_computed?: string }) | null> {
-    if (!attempt.merchantRef) return null;
+  ): Promise<QrisSearchResult> {
+    if (!attempt.merchantRef) return { record: null, matchCount: 0, complete: false };
     const from = new Date(attempt.createdAt.getTime() - 10 * 60 * 1000);
     const to = new Date(attempt.createdAt.getTime() + 20 * 60 * 1000);
-    const matches: Array<QrisResponse & { amount?: number; is_expired?: boolean; status_computed?: string }> = [];
-    for (let page = 1; page <= 5; page += 1) {
+    const matches: QrisTransactionRecord[] = [];
+    let totalPages = 0;
+    let complete = false;
+    for (let page = 1; page <= 20; page += 1) {
       const query = new URLSearchParams({
         amount: String(attempt.amountIdr),
         type: 'mpm-dynamic',
@@ -634,16 +783,27 @@ export class SingaPayService {
         config.partnerId,
       );
       const envelope = asRecord(response);
-      const rows = Array.isArray(envelope?.data) ? envelope.data : [];
+      if (!Array.isArray(envelope?.data)) break;
+      const rows = envelope.data;
       for (const row of rows) {
-        const candidate = asRecord(row) as (QrisResponse & { amount?: number; is_expired?: boolean; status_computed?: string }) | null;
+        const candidate = asRecord(row) as QrisTransactionRecord | null;
         if (candidate?.merchant_reff_no === attempt.merchantRef) matches.push(candidate);
       }
       const pagination = asRecord(asRecord(envelope?.meta)?.pagination);
-      const totalPages = Number(pagination?.total_pages) || 1;
-      if (page >= totalPages || rows.length === 0) break;
+      const reportedTotalPages = Number(pagination?.total_pages);
+      if (!Number.isSafeInteger(reportedTotalPages) || reportedTotalPages < 1) break;
+      totalPages = reportedTotalPages;
+      if (page >= totalPages) {
+        complete = true;
+        break;
+      }
+      if (rows.length === 0) break;
     }
-    return matches.length === 1 ? matches[0] : null;
+    return {
+      record: matches.length === 1 && complete ? matches[0] : null,
+      matchCount: matches.length,
+      complete,
+    };
   }
 
   private async creditAttempt(

@@ -24,7 +24,7 @@ type ModalState =
   | null;
 
 const activeTopUpStatuses: TopUpStatus[] = ['creating', 'pending', 'needs_review'];
-const reconcilableTopUpStatuses: TopUpStatus[] = [...activeTopUpStatuses, 'expired'];
+const reconcilableTopUpStatuses: TopUpStatus[] = [...activeTopUpStatuses, 'expired', 'failed'];
 
 export function App() {
   const [adminToken, setAdminToken] = useState('');
@@ -47,6 +47,7 @@ export function App() {
   const [topUpAmount, setTopUpAmount] = useState('');
   const [manualTopUpReason, setManualTopUpReason] = useState('');
   const [topUpPayment, setTopUpPayment] = useState<TopUp | null>(null);
+  const [topUpError, setTopUpError] = useState('');
   const [topUpIdempotencyKey, setTopUpIdempotencyKey] = useState('');
   const [existingTopUpLoading, setExistingTopUpLoading] = useState(false);
   const [showKey, setShowKey] = useState(false);
@@ -64,6 +65,7 @@ export function App() {
     setTopUpAmount('');
     setManualTopUpReason('');
     setTopUpPayment(null);
+    setTopUpError('');
     setExistingTopUpLoading(nextModal.mode === 'top-up');
     setTopUpIdempotencyKey(nextModal.mode === 'top-up' ? crypto.randomUUID() : '');
     setShowKey(false);
@@ -77,6 +79,7 @@ export function App() {
     setTopUpAmount('');
     setManualTopUpReason('');
     setTopUpPayment(null);
+    setTopUpError('');
     setExistingTopUpLoading(false);
     setTopUpIdempotencyKey('');
     setShowKey(false);
@@ -244,6 +247,19 @@ export function App() {
     window.setTimeout(() => setNotice(''), 3000);
   }
 
+  async function recoverTopUpState(client: Client, key: Client['keys'][number]) {
+    try {
+      const activeTopUp = await apiRequest<TopUp>(
+        `/clients/${client.id}/keys/${key.id}/topups/active`,
+        adminToken,
+      );
+      setTopUpPayment(activeTopUp);
+      setTopUpAmount(String(activeTopUp.amountIdr));
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 404)) throw error;
+    }
+  }
+
   async function submitClient(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const currentModal = modal;
@@ -256,6 +272,7 @@ export function App() {
     if (currentModal.mode === 'manual-top-up' && !manualTopUpReason.trim()) return;
     setLoading(true);
     setPageError('');
+    if (currentModal.mode === 'top-up') setTopUpError('');
     try {
       if (currentModal.mode === 'new-client') {
         await apiRequest('/clients', adminToken, {
@@ -303,7 +320,17 @@ export function App() {
       closeModal();
       await refreshAll();
     } catch (error) {
-      setPageError(error instanceof Error ? error.message : 'Perubahan tidak dapat disimpan.');
+      const message = error instanceof Error ? error.message : 'Perubahan tidak dapat disimpan.';
+      if (currentModal.mode === 'top-up') {
+        setTopUpError(message);
+        try {
+          await recoverTopUpState(currentModal.client, currentModal.key);
+        } catch {
+          // Keep the original payment error visible when the status lookup also fails.
+        }
+      } else {
+        setPageError(message);
+      }
     } finally {
       setLoading(false);
     }
@@ -315,7 +342,7 @@ export function App() {
 
   async function reconcileTopUp(client: Client, key: Client['keys'][number], merchantRef: string) {
     setLoading(true);
-    setPageError('');
+    setTopUpError('');
     try {
       const result = await apiRequest<TopUp>(
         `/clients/${client.id}/keys/${key.id}/topups/${merchantRef}/reconcile`,
@@ -327,12 +354,51 @@ export function App() {
         await apiRequest<Client[]>('/clients', adminToken).then(setClients);
         flash(`${formatRupiah(result.amountIdr)} masuk ke saldo key.`);
       } else if (result.status === 'expired') {
-        flash('QRIS sudah kedaluwarsa. Buat top-up baru untuk melanjutkan.');
+        flash('QRIS kedaluwarsa. Periksa dan buat QR baru dari panel pembayaran.');
+      } else if (result.status === 'needs_review') {
+        flash('Status belum pasti. Gunakan tombol pemulihan QR setelah pemeriksaan ini.');
       } else {
         flash('Status QRIS sudah diperiksa.');
       }
     } catch (error) {
-      setPageError(error instanceof Error ? error.message : 'Status pembayaran tidak dapat diperiksa.');
+      setTopUpError(error instanceof Error ? error.message : 'Status pembayaran tidak dapat diperiksa.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function retryTopUp(client: Client, key: Client['keys'][number], topUp: TopUp) {
+    if (!topUp.merchantRef) return;
+    const confirmed = window.confirm(
+      'Gateway akan memeriksa transaksi ini ke SingaPay. Jika QR lama ditemukan, QR itu akan ditampilkan. Jika pencarian lengkap tidak menemukan transaksi, QR baru dibuat. Pembayaran lama yang masuk belakangan tetap dapat menambah saldo. Lanjutkan?',
+    );
+    if (!confirmed) return;
+
+    setLoading(true);
+    setTopUpError('');
+    try {
+      const result = await apiRequest<TopUp>(
+        `/clients/${client.id}/keys/${key.id}/topups/${topUp.merchantRef}/retry`,
+        adminToken,
+        { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() } },
+      );
+      setTopUpPayment(result);
+      setTopUpAmount(String(result.amountIdr));
+      if (result.status === 'paid') {
+        await apiRequest<Client[]>('/clients', adminToken).then(setClients);
+        flash(`${formatRupiah(result.amountIdr)} masuk ke saldo key.`);
+      } else if (result.qrData && result.status === 'pending') {
+        flash('QRIS tersedia untuk dipindai.');
+      } else {
+        flash('Status pembayaran diperbarui. Ikuti petunjuk pada panel QRIS.');
+      }
+    } catch (error) {
+      setTopUpError(error instanceof Error ? error.message : 'QRIS belum dapat dipulihkan.');
+      try {
+        await recoverTopUpState(client, key);
+      } catch {
+        // Keep the retry error visible if the status lookup also fails.
+      }
     } finally {
       setLoading(false);
     }
@@ -533,6 +599,7 @@ export function App() {
               <button className="icon-button" type="button" aria-label="Tutup" autoFocus={modal.mode === 'revoke-key'} onClick={closeModal}><Icon name="close" size={18} /></button>
             </div>
             <form className="modal-form" onSubmit={(event) => void submitClient(event)}>
+              {modal.mode === 'top-up' && topUpError && <div className="notice notice-error topup-error" role="alert"><Icon name="warning" size={16} /><span>{topUpError}</span><button type="button" onClick={() => setTopUpError('')} aria-label="Tutup pesan"><Icon name="close" size={15} /></button></div>}
               {modalNeedsName && <label>{modal.mode === 'rename-client' ? 'Nama client baru' : 'Nama client'}<input autoFocus autoComplete="off" maxLength={80} required value={clientName} onChange={(event) => setClientName(event.target.value)} placeholder="Contoh: Layanan pencarian" /></label>}
               {modalNeedsKey && <label>API key DeepSeek
                 <div className="password-field"><input autoFocus={modal.mode === 'add-key'} autoComplete="new-password" required minLength={12} type={showKey ? 'text' : 'password'} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Tempel key yang digunakan client" /><button type="button" onClick={() => setShowKey(!showKey)}>{showKey ? 'Sembunyikan' : 'Tampilkan'}</button></div>
@@ -540,6 +607,7 @@ export function App() {
               {modalNeedsAmount && modal.mode === 'top-up' && topUpPayment && <QrisPaymentPanel
                 topUp={topUpPayment}
                 loading={loading}
+                onRetry={() => void retryTopUp(modal.client, modal.key, topUpPayment)}
                 onReconcile={() => {
                   if (topUpPayment.merchantRef) {
                     void reconcileTopUp(modal.client, modal.key, topUpPayment.merchantRef);
@@ -752,10 +820,11 @@ function ClientsPage({
   );
 }
 
-function QrisPaymentPanel({ topUp, loading, onReconcile }: {
+function QrisPaymentPanel({ topUp, loading, onReconcile, onRetry }: {
   topUp: TopUp;
   loading: boolean;
   onReconcile: () => void;
+  onRetry: () => void;
 }) {
   const [qrImage, setQrImage] = useState('');
   const [qrError, setQrError] = useState('');
@@ -791,10 +860,15 @@ function QrisPaymentPanel({ topUp, loading, onReconcile }: {
     creating: 'SingaPay sedang menyiapkan kode. Status akan diperbarui otomatis.',
     pending: 'Pindai kode ini dengan aplikasi mobile banking atau e-wallet. Saldo masuk setelah pembayaran dikonfirmasi.',
     paid: 'Pembayaran telah dikonfirmasi dan saldo key sudah diperbarui.',
-    expired: 'Kode ini sudah kedaluwarsa. Buat top-up baru untuk melanjutkan.',
-    failed: 'SingaPay menolak pembuatan kode. Saldo belum berubah.',
+    expired: 'Kode ini sudah kedaluwarsa. Periksa status SingaPay sebelum membuat QR pengganti.',
+    failed: 'SingaPay menolak pembuatan kode. Saldo belum berubah; periksa referensi sebelum mencoba lagi.',
     needs_review: topUp.reviewReason ?? 'Status pembayaran belum dapat dipastikan. Jangan bayar ulang dulu; periksa referensi ini.',
   };
+  const retryAvailable = Boolean(topUp.merchantRef) && (
+    topUp.status === 'expired'
+    || (topUp.status === 'failed' && !topUp.qrData)
+    || (topUp.status === 'needs_review' && !topUp.qrData)
+  );
 
   async function copyQrData() {
     if (!topUp.qrData) return;
@@ -833,15 +907,26 @@ function QrisPaymentPanel({ topUp, loading, onReconcile }: {
           {copyState && <span role="status">{copyState}</span>}
         </details>
       )}
-      {reconcilableTopUpStatuses.includes(topUp.status) && topUp.merchantRef && (
-        <button
-          className="button button-quiet button-small qris-reconcile"
-          type="button"
-          disabled={loading}
-          onClick={onReconcile}
-        >
-          {loading ? 'Memeriksa status…' : topUp.status === 'needs_review' ? 'Periksa ke SingaPay' : topUp.status === 'expired' ? 'Periksa pembayaran' : 'Perbarui status'}
-        </button>
+      {retryAvailable && <p className="qris-retry-note">SingaPay diperiksa lagi sebelum QR pengganti dibuat. Pembayaran lama yang masuk belakangan tetap bisa menambah saldo.</p>}
+      {(retryAvailable || reconcilableTopUpStatuses.includes(topUp.status)) && topUp.merchantRef && (
+        <div className="qris-actions">
+          {retryAvailable && <button
+            className="button button-primary button-small qris-retry"
+            type="button"
+            disabled={loading}
+            onClick={onRetry}
+          >
+            {loading ? 'Memeriksa SingaPay…' : topUp.status === 'expired' ? 'Periksa & buat QR baru' : topUp.status === 'failed' ? 'Coba buat QR lagi' : 'Cari atau buat QR'}
+          </button>}
+          {reconcilableTopUpStatuses.includes(topUp.status) && <button
+            className="button button-quiet button-small qris-reconcile"
+            type="button"
+            disabled={loading}
+            onClick={onReconcile}
+          >
+            {loading ? 'Memeriksa status…' : topUp.status === 'needs_review' || topUp.status === 'failed' ? 'Periksa ke SingaPay' : topUp.status === 'expired' ? 'Periksa pembayaran' : 'Perbarui status'}
+          </button>}
+        </div>
       )}
       {qrError && <p className="qris-inline-error" role="alert">{qrError}</p>}
     </section>

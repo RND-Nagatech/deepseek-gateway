@@ -134,4 +134,14 @@ export class ClientsController {
   ) {
     return this.singaPay.reconcileTopUp(keyId, merchantRef, id);
   }
+
+  @Post(':id/keys/:keyId/topups/:merchantRef/retry')
+  retryTopUp(
+    @Param('id') id: string,
+    @Param('keyId') keyId: string,
+    @Param('merchantRef') merchantRef: string,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.singaPay.retryQrisTopUp(keyId, merchantRef, idempotencyKey ?? '', id);
+  }
 }

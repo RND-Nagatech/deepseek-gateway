@@ -19,7 +19,7 @@ tags:
   - name: Account
     description: Balance and usage information for the authenticated API key
   - name: Top-ups
-    description: Create QRIS payments and inspect top-ups for the authenticated API key
+    description: Create, recover, and inspect QRIS top-ups for the authenticated API key
 paths:
   /api/v1/me/balance:
     get:
@@ -62,29 +62,6 @@ paths:
                 $ref: '#/components/schemas/TopUpPage'
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '503':
-          $ref: '#/components/responses/ServiceUnavailable'
-  /api/v1/me/topups/active:
-    get:
-      operationId: getMyActiveTopUp
-      tags: [Top-ups]
-      summary: Get the active QRIS top-up for this API key
-      description: Returns the current creating, pending, or review-required payment, if one exists.
-      responses:
-        '200':
-          description: Active top-up status and QRIS details
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TopUpRecord'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: No active QRIS top-up exists for this API key
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
     post:
@@ -132,6 +109,29 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '409':
           description: Idempotency-Key is already associated with a different amount or in-flight creation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/me/topups/active:
+    get:
+      operationId: getMyActiveTopUp
+      tags: [Top-ups]
+      summary: Get the latest QRIS top-up that needs attention
+      description: Returns the most recent payment that still needs attention, including creating, pending, review-required, expired, or failed attempts.
+      responses:
+        '200':
+          description: Current or recoverable top-up status and QRIS details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopUpRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No unfinished or recoverable QRIS top-up exists for this API key
           content:
             application/json:
               schema:
@@ -233,6 +233,57 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: Top-up does not belong to this API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/me/topups/{merchantRef}/retry:
+    post:
+      operationId: retryMyQrisTopUp
+      tags: [Top-ups]
+      summary: Recover or replace a QRIS top-up
+      description: |
+        Checks SingaPay before creating anything. If the exact existing payment is found,
+        its QR or final status is returned. A new QR is created only after a complete
+        provider search finds no matching merchant reference. Ambiguous or incomplete
+        searches return a conflict and do not create another QR. A late verified callback
+        for an earlier attempt can still credit the balance once.
+      parameters:
+        - name: merchantRef
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: A new unique key for this recovery attempt; 8 to 128 safe characters.
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._:-]+$'
+      responses:
+        '201':
+          description: Existing payment recovered or a replacement QR created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopUpRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Top-up does not belong to this API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Payment lookup is ambiguous, incomplete, or changed concurrently
           content:
             application/json:
               schema:

@@ -315,7 +315,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .qris-payment-meta > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .qris-payment-meta dt { color: var(--muted); font-size: 9px; }
 .qris-payment-meta dd { margin: 0; color: #4c5e53; font-size: 10px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; text-align: right; }
-.qris-reconcile { width: 100%; justify-content: center; }
+.qris-retry-note { margin: 0; color: #72582f; font-size: 10px; line-height: 1.5; }
+.qris-actions { display: grid; gap: 8px; }
+.qris-retry, .qris-reconcile { width: 100%; justify-content: center; }
+.topup-error { margin: 0; align-items: flex-start; }
+.topup-error > svg { flex: 0 0 auto; margin-top: 1px; }
 .qris-raw-data { display: grid; gap: 8px; padding-top: 2px; color: #52635a; font-size: 10px; }
 .qris-raw-data summary { width: fit-content; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 .qris-raw-data code { max-height: 70px; overflow: auto; padding: 7px; border-radius: 5px; color: #46594f; background: #e9efea; font-size: 9px; overflow-wrap: anywhere; }

@@ -85,8 +85,9 @@ The self-service API uses the same registered DeepSeek key as the proxy. It only
 
 - GET /api/v1/me/balance returns the current rupiah balance, latest top-up, and whether the key can make a request. A balance below Rp10 is blocked by the proxy; a later usage charge can make the balance negative.
 - POST /api/v1/me/topups creates a QRIS payment attempt for this key. Send a unique `Idempotency-Key` header and an integer `amountIdr`; the balance changes only after a verified payment callback.
-- GET /api/v1/me/topups lists QRIS payment attempts; GET /api/v1/me/topups/active returns the active payment; GET /api/v1/me/topups/{merchantRef} returns a payment status and its QR data.
+- GET /api/v1/me/topups lists QRIS payment attempts; GET /api/v1/me/topups/active returns the latest payment that still needs attention; GET /api/v1/me/topups/{merchantRef} returns a payment status and its QR data.
 - POST /api/v1/me/topups/{merchantRef}/reconcile asks SingaPay for the existing payment status. It never creates another QR and can credit a confirmed payment once, including a late payment after expiry.
+- POST /api/v1/me/topups/{merchantRef}/retry checks SingaPay again and returns the existing QR if found. It creates a replacement only after a complete search finds no matching transaction; ambiguous or incomplete searches are blocked. Use a new Idempotency-Key for each recovery attempt.
 - GET /api/v1/me/usage/summary returns request/status totals, token totals, cost, and a daily series. It defaults to the last 30 days.
 - GET /api/v1/me/usage returns individual request records. Use limit (up to 100), optional ISO 8601 from/to filters (to is exclusive), and the returned nextCursor to fetch more records.
 
