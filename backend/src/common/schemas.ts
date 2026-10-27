@@ -5,10 +5,23 @@ export type ClientDocument = HydratedDocument<Client>;
 export type ClientKeyDocument = HydratedDocument<ClientKey>;
 export type UsageEventDocument = HydratedDocument<UsageEvent>;
 export type AppSettingDocument = HydratedDocument<AppSetting>;
+export type SingaPayWebhookEventDocument = HydratedDocument<SingaPayWebhookEvent>;
 
 export interface KeyTopUp {
   amountIdr: number;
   createdAt: Date;
+  source?: 'manual' | 'singapay';
+  status?: 'creating' | 'pending' | 'paid' | 'expired' | 'failed' | 'needs_review';
+  reason?: string | null;
+  method?: 'qris';
+  merchantRef?: string | null;
+  idempotencyKey?: string | null;
+  providerTransactionId?: string | null;
+  providerReference?: string | null;
+  qrData?: string | null;
+  expiresAt?: Date | null;
+  paidAt?: Date | null;
+  reviewReason?: string | null;
 }
 
 @Schema({ timestamps: true, collection: 'clients' })
@@ -44,7 +57,22 @@ export class ClientKey {
   balanceMicrosIdr!: Types.Decimal128;
 
   @Prop({
-    type: [{ amountIdr: { type: Number, required: true }, createdAt: { type: Date, required: true } }],
+    type: [{
+      amountIdr: { type: Number, required: true },
+      createdAt: { type: Date, required: true },
+      source: { type: String, enum: ['manual', 'singapay'], default: 'manual' },
+      status: { type: String, enum: ['creating', 'pending', 'paid', 'expired', 'failed', 'needs_review'], default: 'paid' },
+      reason: { type: String, default: null },
+      method: { type: String, enum: ['qris'], default: null },
+      merchantRef: { type: String },
+      idempotencyKey: { type: String, default: null },
+      providerTransactionId: { type: String, default: null },
+      providerReference: { type: String, default: null },
+      qrData: { type: String, default: null },
+      expiresAt: { type: Date, default: null },
+      paidAt: { type: Date, default: null },
+      reviewReason: { type: String, default: null },
+    }],
     default: [],
   })
   topUps!: KeyTopUp[];
@@ -57,6 +85,7 @@ export class ClientKey {
 }
 
 export const ClientKeySchema = SchemaFactory.createForClass(ClientKey);
+ClientKeySchema.index({ 'topUps.merchantRef': 1 });
 
 @Schema({ timestamps: true, collection: 'usage_events' })
 export class UsageEvent {
@@ -142,3 +171,35 @@ export class AppSetting {
 }
 
 export const AppSettingSchema = SchemaFactory.createForClass(AppSetting);
+
+@Schema({ timestamps: true, collection: 'singapay_webhook_events' })
+export class SingaPayWebhookEvent {
+  @Prop({ required: true, unique: true })
+  eventKey!: string;
+
+  @Prop({ required: true })
+  event!: string;
+
+  @Prop({ type: String, default: null })
+  merchantRef!: string | null;
+
+  @Prop({ type: String, default: null })
+  providerTransactionId!: string | null;
+
+  @Prop({ type: String, default: null })
+  payloadHash!: string | null;
+
+  @Prop({ default: 'received', enum: ['received', 'credited', 'duplicate', 'review', 'ignored'] })
+  processingStatus!: 'received' | 'credited' | 'duplicate' | 'review' | 'ignored';
+
+  @Prop({ type: String, default: null })
+  processingNote!: string | null;
+
+  @Prop({ type: Date, required: true })
+  receivedAt!: Date;
+
+  declare createdAt: Date;
+  declare updatedAt: Date;
+}
+
+export const SingaPayWebhookEventSchema = SchemaFactory.createForClass(SingaPayWebhookEvent);

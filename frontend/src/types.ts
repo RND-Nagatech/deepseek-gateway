@@ -1,4 +1,20 @@
 export type View = 'overview' | 'clients' | 'usage' | 'pricing';
+export type TopUpStatus = 'creating' | 'pending' | 'paid' | 'expired' | 'failed' | 'needs_review';
+
+export interface TopUp {
+  amountIdr: number;
+  currency: 'IDR';
+  method: 'qris';
+  status: TopUpStatus;
+  source: 'manual' | 'singapay';
+  merchantRef: string | null;
+  providerReference: string | null;
+  qrData: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  paidAt: string | null;
+  reviewReason: string | null;
+}
 
 export interface ClientKey {
   id: string;
@@ -8,7 +24,18 @@ export interface ClientKey {
   createdAt?: string;
   balanceIdr: number;
   topUpCount: number;
-  lastTopUp: { amountIdr: number; createdAt: string } | null;
+  lastTopUp: {
+    amountIdr: number;
+    createdAt: string;
+    source?: 'manual' | 'singapay';
+    status?: TopUpStatus;
+    method?: 'qris' | null;
+    merchantRef?: string | null;
+    expiresAt?: string | null;
+    paidAt?: string | null;
+    reviewReason?: string | null;
+    reason?: string | null;
+  } | null;
 }
 
 export interface Client {

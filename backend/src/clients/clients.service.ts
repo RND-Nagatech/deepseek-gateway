@@ -119,7 +119,7 @@ export class ClientsService {
           createdAt: key.createdAt,
             balanceIdr: microsIdrToRupiah(key.balanceMicrosIdr),
             topUpCount: key.topUps?.length ?? 0,
-            lastTopUp: key.topUps?.at(-1) ?? null,
+              lastTopUp: key.topUps?.at(-1) ? this.topUpSummary(key.topUps.at(-1)!) : null,
         })),
       };
     });
@@ -151,14 +151,20 @@ export class ClientsService {
     return { id: String(key._id), status: key.status };
   }
 
-  async topUpKey(clientId: string, keyId: string, amountIdr: number) {
+    async topUpKey(clientId: string, keyId: string, amountIdr: number, reason = 'Penyesuaian manual oleh admin') {
     const createdAt = new Date();
     const increment = Types.Decimal128.fromString(rupiahToMicroIdr(amountIdr));
     const key = await this.keys.findOneAndUpdate(
       { _id: keyId, clientId, status: 'active' },
       {
         $inc: { balanceMicrosIdr: increment },
-        $push: { topUps: { amountIdr, createdAt } },
+          $push: { topUps: {
+            amountIdr,
+            createdAt,
+            source: 'manual',
+            status: 'paid',
+            reason: reason.trim() || 'Penyesuaian manual oleh admin',
+          } },
       },
       { new: true, runValidators: true },
     ).lean().exec();
@@ -171,7 +177,7 @@ export class ClientsService {
       keyHint: key.keyHint,
       balanceIdr: microsIdrToRupiah(key.balanceMicrosIdr),
       topUpCount: key.topUps?.length ?? 0,
-      lastTopUp: key.topUps?.at(-1) ?? { amountIdr, createdAt },
+        lastTopUp: key.topUps?.at(-1) ? this.topUpSummary(key.topUps.at(-1)!) : { amountIdr, createdAt, source: 'manual', status: 'paid' },
     };
   }
 
@@ -195,6 +201,21 @@ export class ClientsService {
 
   async touchKey(keyId: Types.ObjectId) {
     await this.keys.updateOne({ _id: keyId }, { $set: { lastUsedAt: new Date() } }).exec();
+  }
+
+  private topUpSummary(topUp: NonNullable<ClientKeyDocument['topUps']>[number]) {
+    return {
+      amountIdr: topUp.amountIdr,
+      createdAt: topUp.createdAt,
+      source: topUp.source ?? 'manual',
+      status: topUp.status ?? 'paid',
+      method: topUp.method ?? null,
+      merchantRef: topUp.merchantRef ?? null,
+      expiresAt: topUp.expiresAt ?? null,
+      paidAt: topUp.paidAt ?? null,
+      reviewReason: topUp.reviewReason ?? null,
+      reason: topUp.reason ?? null,
+    };
   }
 
   private async aggregateClientTotals() {

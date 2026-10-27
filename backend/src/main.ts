@@ -10,7 +10,7 @@ async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter({ bodyLimit: 20 * 1024 * 1024 }),
-    { bufferLogs: true },
+    { bufferLogs: true, rawBody: true },
   );
 
   const corsOrigins = process.env.CORS_ORIGINS
@@ -23,7 +23,7 @@ async function bootstrap() {
       'http://127.0.0.1:5173', 'http://localhost:5173',
     ],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['content-type', 'authorization', 'x-admin-token', 'x-api-key'],
+    allowedHeaders: ['content-type', 'authorization', 'x-admin-token', 'x-api-key', 'idempotency-key'],
   });
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
   await app.init();

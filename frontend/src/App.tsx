@@ -1,10 +1,11 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import QRCode from 'qrcode';
 import { CostChart } from './components/CostChart';
 import { Icon, IconName } from './components/Icon';
 import { UsageTable } from './components/UsageTable';
-import { apiRequest, checkHealth } from './lib/api';
+import { ApiError, apiRequest, checkHealth } from './lib/api';
 import { formatDate, formatNumber, formatRupiah, formatRupiahBalance } from './lib/format';
-import { Client, Health, Overview, Pricing, UsageRow, View } from './types';
+import { Client, Health, Overview, Pricing, TopUp, TopUpStatus, UsageRow, View } from './types';
 
 const navigation: Array<{ id: View; label: string; icon: IconName }> = [
   { id: 'overview', label: 'Ringkasan', icon: 'overview' },
@@ -19,7 +20,11 @@ type ModalState =
   | { mode: 'rename-client'; client: Client }
   | { mode: 'revoke-key'; client: Client; keyId: string }
   | { mode: 'top-up'; client: Client; key: Client['keys'][number] }
+  | { mode: 'manual-top-up'; client: Client; key: Client['keys'][number] }
   | null;
+
+const activeTopUpStatuses: TopUpStatus[] = ['creating', 'pending', 'needs_review'];
+const reconcilableTopUpStatuses: TopUpStatus[] = [...activeTopUpStatuses, 'expired'];
 
 export function App() {
   const [adminToken, setAdminToken] = useState('');
@@ -40,6 +45,10 @@ export function App() {
   const [clientName, setClientName] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [topUpAmount, setTopUpAmount] = useState('');
+  const [manualTopUpReason, setManualTopUpReason] = useState('');
+  const [topUpPayment, setTopUpPayment] = useState<TopUp | null>(null);
+  const [topUpIdempotencyKey, setTopUpIdempotencyKey] = useState('');
+  const [existingTopUpLoading, setExistingTopUpLoading] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [expandedClient, setExpandedClient] = useState<string | null>(null);
   const [usageClientFilter, setUsageClientFilter] = useState('all');
@@ -53,6 +62,10 @@ export function App() {
     setClientName(nextModal.mode === 'rename-client' ? nextModal.client.name : '');
     setApiKey('');
     setTopUpAmount('');
+    setManualTopUpReason('');
+    setTopUpPayment(null);
+    setExistingTopUpLoading(nextModal.mode === 'top-up');
+    setTopUpIdempotencyKey(nextModal.mode === 'top-up' ? crypto.randomUUID() : '');
     setShowKey(false);
     setModal(nextModal);
   }
@@ -62,6 +75,10 @@ export function App() {
     setClientName('');
     setApiKey('');
     setTopUpAmount('');
+    setManualTopUpReason('');
+    setTopUpPayment(null);
+    setExistingTopUpLoading(false);
+    setTopUpIdempotencyKey('');
     setShowKey(false);
     window.requestAnimationFrame(() => modalTriggerRef.current?.focus());
   }
@@ -150,6 +167,56 @@ export function App() {
   }, [days]);
 
   useEffect(() => {
+    if (!authenticated || modal?.mode !== 'top-up') return;
+    let cancelled = false;
+    setExistingTopUpLoading(true);
+    apiRequest<TopUp>(
+      `/clients/${modal.client.id}/keys/${modal.key.id}/topups/active`,
+      adminToken,
+    )
+      .then((topUp) => {
+        if (!cancelled) {
+          setTopUpPayment(topUp);
+          setTopUpAmount(String(topUp.amountIdr));
+        }
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        if (error instanceof ApiError && error.status === 404) {
+          setTopUpPayment(null);
+          return;
+        }
+        setPageError(error instanceof Error ? error.message : 'Status top-up tidak dapat dimuat.');
+      })
+      .finally(() => { if (!cancelled) setExistingTopUpLoading(false); });
+    return () => { cancelled = true; };
+  }, [authenticated, adminToken, modal]);
+
+  useEffect(() => {
+    if (!authenticated || modal?.mode !== 'top-up' || !topUpPayment?.merchantRef
+      || !activeTopUpStatuses.includes(topUpPayment.status)) return;
+
+    const client = modal.client;
+    const key = modal.key;
+    const merchantRef = topUpPayment.merchantRef;
+    const timer = window.setInterval(() => {
+      void apiRequest<TopUp>(
+        `/clients/${client.id}/keys/${key.id}/topups/${merchantRef}`,
+        adminToken,
+      )
+        .then((nextTopUp) => {
+          setTopUpPayment(nextTopUp);
+          if (nextTopUp.status === 'paid') {
+            void apiRequest<Client[]>('/clients', adminToken).then(setClients).catch(() => undefined);
+            flash(`${formatRupiah(nextTopUp.amountIdr)} masuk ke saldo key.`);
+          }
+        })
+        .catch((error: unknown) => setPageError(error instanceof Error ? error.message : 'Status pembayaran tidak dapat diperbarui.'));
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [authenticated, adminToken, modal, topUpPayment?.merchantRef, topUpPayment?.status]);
+
+  useEffect(() => {
     if (pricing) setPriceInput(String(pricing.pricePerMillionIdr));
   }, [pricing]);
 
@@ -184,7 +251,9 @@ export function App() {
     if (currentModal.mode === 'new-client' && (!clientName.trim() || !apiKey.trim())) return;
     if (currentModal.mode === 'add-key' && !apiKey.trim()) return;
     if (currentModal.mode === 'rename-client' && !clientName.trim()) return;
-    if (currentModal.mode === 'top-up' && (!Number.isSafeInteger(Number(topUpAmount)) || Number(topUpAmount) < 1 || Number(topUpAmount) > 1_000_000_000)) return;
+    if ((currentModal.mode === 'top-up' || currentModal.mode === 'manual-top-up')
+      && (!Number.isSafeInteger(Number(topUpAmount)) || Number(topUpAmount) < 1 || Number(topUpAmount) > 1_000_000_000)) return;
+    if (currentModal.mode === 'manual-top-up' && !manualTopUpReason.trim()) return;
     setLoading(true);
     setPageError('');
     try {
@@ -209,13 +278,27 @@ export function App() {
       } else if (currentModal.mode === 'revoke-key') {
         await apiRequest(`/clients/${currentModal.client.id}/keys/${currentModal.keyId}/revoke`, adminToken, { method: 'PATCH' });
         flash('API key dicabut.');
+      } else if (currentModal.mode === 'top-up') {
+        const amountIdr = Number(topUpAmount);
+        const payment = await apiRequest<TopUp>(`/clients/${currentModal.client.id}/keys/${currentModal.key.id}/qris-topups`, adminToken, {
+          method: 'POST',
+          headers: { 'Idempotency-Key': topUpIdempotencyKey },
+          body: JSON.stringify({ amountIdr }),
+        });
+        setTopUpPayment(payment);
+        setTopUpAmount(String(amountIdr));
+        flash(payment.status === 'paid'
+          ? `${formatRupiah(amountIdr)} masuk ke saldo ${currentModal.key.keyHint}.`
+          : 'QRIS siap. Saldo bertambah setelah pembayaran dikonfirmasi.');
+        await refreshAll();
+        return;
       } else {
         const amountIdr = Number(topUpAmount);
         await apiRequest(`/clients/${currentModal.client.id}/keys/${currentModal.key.id}/topups`, adminToken, {
           method: 'POST',
-          body: JSON.stringify({ amountIdr }),
+          body: JSON.stringify({ amountIdr, reason: manualTopUpReason.trim() }),
         });
-        flash(`${formatRupiah(amountIdr)} ditambahkan ke saldo ${currentModal.key.keyHint}.`);
+        flash(`${formatRupiah(amountIdr)} ditambahkan secara manual ke saldo ${currentModal.key.keyHint}.`);
       }
       closeModal();
       await refreshAll();
@@ -228,6 +311,31 @@ export function App() {
 
   async function renameClient(client: Client) {
     openModal({ mode: 'rename-client', client });
+  }
+
+  async function reconcileTopUp(client: Client, key: Client['keys'][number], merchantRef: string) {
+    setLoading(true);
+    setPageError('');
+    try {
+      const result = await apiRequest<TopUp>(
+        `/clients/${client.id}/keys/${key.id}/topups/${merchantRef}/reconcile`,
+        adminToken,
+        { method: 'POST' },
+      );
+      setTopUpPayment(result);
+      if (result.status === 'paid') {
+        await apiRequest<Client[]>('/clients', adminToken).then(setClients);
+        flash(`${formatRupiah(result.amountIdr)} masuk ke saldo key.`);
+      } else if (result.status === 'expired') {
+        flash('QRIS sudah kedaluwarsa. Buat top-up baru untuk melanjutkan.');
+      } else {
+        flash('Status QRIS sudah diperiksa.');
+      }
+    } catch (error) {
+      setPageError(error instanceof Error ? error.message : 'Status pembayaran tidak dapat diperiksa.');
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function toggleClient(client: Client) {
@@ -291,7 +399,7 @@ export function App() {
   const gatewayReady = health?.status === 'ok';
   const modalNeedsName = modal?.mode === 'new-client' || modal?.mode === 'rename-client';
   const modalNeedsKey = modal?.mode === 'new-client' || modal?.mode === 'add-key';
-  const modalNeedsAmount = modal?.mode === 'top-up';
+  const modalNeedsAmount = modal?.mode === 'top-up' || modal?.mode === 'manual-top-up';
   const modalTitle = modal?.mode === 'new-client'
     ? 'Daftarkan client'
     : modal?.mode === 'add-key'
@@ -300,7 +408,11 @@ export function App() {
         ? 'Ubah nama client'
         : modal?.mode === 'revoke-key'
           ? 'Cabut API key'
-          : 'Tambah saldo';
+          : modal?.mode === 'manual-top-up'
+            ? 'Penyesuaian saldo'
+            : topUpPayment
+              ? 'Pembayaran QRIS'
+              : 'Isi saldo via QRIS';
   const modalDescription = modal?.mode === 'new-client'
     ? 'Pasangkan key DeepSeek yang sudah digunakan client.'
     : modal?.mode === 'add-key'
@@ -310,7 +422,9 @@ export function App() {
         : modal?.mode === 'revoke-key'
           ? `Cabut key milik ${modal.client.name}. Request berikutnya dengan key ini akan ditolak.`
           : modal?.mode === 'top-up'
-            ? `Saldo ditambahkan khusus untuk key ${modal.key.keyHint} milik ${modal.client.name}.`
+            ? `Pembayaran untuk key ${modal.key.keyHint} milik ${modal.client.name}. Saldo masuk setelah SingaPay mengonfirmasi pembayaran.`
+            : modal?.mode === 'manual-top-up'
+              ? `Catat penyesuaian langsung pada saldo key ${modal.key.keyHint} milik ${modal.client.name}.`
             : '';
 
   return (
@@ -379,6 +493,7 @@ export function App() {
               onAdd={() => openModal({ mode: 'new-client' })}
               onAddKey={(client) => openModal({ mode: 'add-key', client })}
               onTopUp={(client, key) => openModal({ mode: 'top-up', client, key })}
+              onManualTopUp={(client, key) => openModal({ mode: 'manual-top-up', client, key })}
               onRename={(client) => void renameClient(client)}
               onToggle={(client) => void toggleClient(client)}
               onRevoke={(client, keyId) => void revokeKey(client, keyId)}
@@ -414,7 +529,7 @@ export function App() {
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}>
             <section className="modal-panel" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="client-modal-title" aria-describedby="client-modal-description">
             <div className="modal-head">
-              <div><span className="modal-mark"><Icon name={modal.mode === 'rename-client' ? 'clients' : modal.mode === 'top-up' ? 'wallet' : 'key'} size={18} /></span><div><h2 id="client-modal-title">{modalTitle}</h2><p id="client-modal-description">{modalDescription}</p></div></div>
+              <div><span className="modal-mark"><Icon name={modal.mode === 'rename-client' ? 'clients' : modal.mode === 'top-up' || modal.mode === 'manual-top-up' ? 'wallet' : 'key'} size={18} /></span><div><h2 id="client-modal-title">{modalTitle}</h2><p id="client-modal-description">{modalDescription}</p></div></div>
               <button className="icon-button" type="button" aria-label="Tutup" autoFocus={modal.mode === 'revoke-key'} onClick={closeModal}><Icon name="close" size={18} /></button>
             </div>
             <form className="modal-form" onSubmit={(event) => void submitClient(event)}>
@@ -422,13 +537,28 @@ export function App() {
               {modalNeedsKey && <label>API key DeepSeek
                 <div className="password-field"><input autoFocus={modal.mode === 'add-key'} autoComplete="new-password" required minLength={12} type={showKey ? 'text' : 'password'} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Tempel key yang digunakan client" /><button type="button" onClick={() => setShowKey(!showKey)}>{showKey ? 'Sembunyikan' : 'Tampilkan'}</button></div>
               </label>}
-              {modalNeedsAmount && <label>Jumlah top-up
-                <div className="rupiah-input"><span>Rp</span><input autoFocus inputMode="numeric" type="number" min="1" max="1000000000" step="1" required value={topUpAmount} onChange={(event) => setTopUpAmount(event.target.value)} placeholder="50000" /><small>Saldo khusus key ini</small></div>
+              {modalNeedsAmount && modal.mode === 'top-up' && topUpPayment && <QrisPaymentPanel
+                topUp={topUpPayment}
+                loading={loading}
+                onReconcile={() => {
+                  if (topUpPayment.merchantRef) {
+                    void reconcileTopUp(modal.client, modal.key, topUpPayment.merchantRef);
+                  }
+                }}
+              />}
+              {modalNeedsAmount && modal.mode === 'top-up' && !topUpPayment && existingTopUpLoading && <div className="payment-loading" role="status">Memuat QRIS yang masih menunggu pembayaran…</div>}
+              {modalNeedsAmount && !topUpPayment && !existingTopUpLoading && <label>Jumlah top-up
+                <div className="rupiah-input"><span>Rp</span><input autoFocus={modal.mode === 'top-up' || modal.mode === 'manual-top-up'} inputMode="numeric" type="number" min="1" max="1000000000" step="1" required value={topUpAmount} onChange={(event) => setTopUpAmount(event.target.value)} placeholder="50000" /><small>Saldo khusus key ini</small></div>
               </label>}
+              {modal.mode === 'manual-top-up' && <label>Alasan penyesuaian<input autoFocus maxLength={160} required value={manualTopUpReason} onChange={(event) => setManualTopUpReason(event.target.value)} placeholder="Contoh: koreksi pembayaran transfer" /></label>}
               {modalNeedsKey && <div className="key-handling-note"><Icon name="warning" size={15} /><span>Key dipakai untuk mencocokkan request lalu diteruskan ke DeepSeek. Sistem hanya menyimpan fingerprint, bukan nilai key.</span></div>}
               {modal.mode === 'revoke-key' && <div className="key-handling-note revoke-note"><Icon name="warning" size={15} /><span>Key akan langsung ditolak oleh gateway setelah dicabut.</span></div>}
-              {modalNeedsAmount && <div className="key-handling-note"><Icon name="wallet" size={15} /><span>Saldo minimal Rp10 untuk memulai request. Biaya aktual dapat membuat saldo minus.</span></div>}
-              <div className="modal-actions"><button className="button button-quiet" type="button" onClick={closeModal}>Batal</button><button className="button button-primary" type="submit" disabled={loading || (modal.mode === 'new-client' && (!clientName.trim() || !apiKey.trim())) || (modal.mode === 'add-key' && !apiKey.trim()) || (modal.mode === 'rename-client' && !clientName.trim()) || (modal.mode === 'top-up' && (!Number.isSafeInteger(Number(topUpAmount)) || Number(topUpAmount) < 1 || Number(topUpAmount) > 1_000_000_000))}>{loading ? modal.mode === 'revoke-key' ? 'Mencabut…' : 'Menyimpan…' : modal.mode === 'new-client' ? 'Simpan client' : modal.mode === 'add-key' ? 'Tambahkan key' : modal.mode === 'rename-client' ? 'Simpan nama' : modal.mode === 'revoke-key' ? 'Cabut key' : 'Tambah saldo'}</button></div>
+              {modal.mode === 'top-up' && !topUpPayment && <div className="key-handling-note"><Icon name="wallet" size={15} /><span>QRIS aktif selama sekitar satu jam. Saldo minimal Rp10 untuk memulai request; biaya aktual tetap dapat membuat saldo minus.</span></div>}
+              {modal.mode === 'manual-top-up' && <div className="key-handling-note"><Icon name="warning" size={15} /><span>Penyesuaian langsung masuk ke saldo key dan tercatat bersama alasannya.</span></div>}
+              <div className="modal-actions">
+                {topUpPayment || existingTopUpLoading ? <button className="button button-quiet" type="button" onClick={closeModal}>Tutup</button> : <button className="button button-quiet" type="button" onClick={closeModal}>Batal</button>}
+                {!topUpPayment && !existingTopUpLoading && <button className="button button-primary" type="submit" disabled={loading || (modal.mode === 'new-client' && (!clientName.trim() || !apiKey.trim())) || (modal.mode === 'add-key' && !apiKey.trim()) || (modal.mode === 'rename-client' && !clientName.trim()) || ((modal.mode === 'top-up' || modal.mode === 'manual-top-up') && (!Number.isSafeInteger(Number(topUpAmount)) || Number(topUpAmount) < 1 || Number(topUpAmount) > 1_000_000_000)) || (modal.mode === 'manual-top-up' && !manualTopUpReason.trim())}>{loading ? modal.mode === 'top-up' ? 'Membuat QRIS…' : 'Menyimpan…' : modal.mode === 'new-client' ? 'Simpan client' : modal.mode === 'add-key' ? 'Tambahkan key' : modal.mode === 'rename-client' ? 'Simpan nama' : modal.mode === 'revoke-key' ? 'Cabut key' : modal.mode === 'manual-top-up' ? 'Catat penyesuaian' : 'Buat QRIS'}</button>}
+              </div>
             </form>
           </section>
         </div>
@@ -553,6 +683,7 @@ function ClientsPage({
   onAdd,
   onAddKey,
   onTopUp,
+  onManualTopUp,
   onRename,
   onToggle,
   onRevoke,
@@ -563,6 +694,7 @@ function ClientsPage({
   onAdd: () => void;
   onAddKey: (client: Client) => void;
   onTopUp: (client: Client, key: Client['keys'][number]) => void;
+  onManualTopUp: (client: Client, key: Client['keys'][number]) => void;
   onRename: (client: Client) => void;
   onToggle: (client: Client) => void;
   onRevoke: (client: Client, keyId: string) => void;
@@ -600,10 +732,13 @@ function ClientsPage({
                   <div className="key-row" key={key.id}>
                     <span className="key-row-icon"><Icon name="key" size={16} /></span>
                     <div className="key-row-identity"><code>{key.keyHint}</code><small>Terakhir dipakai {formatDate(key.lastUsedAt)}</small></div>
-                    <div className="key-balance"><span>Saldo key</span><strong>{formatRupiahBalance(key.balanceIdr)}</strong>{key.lastTopUp && <small>Top-up {formatRupiah(key.lastTopUp.amountIdr)} · {formatDate(key.lastTopUp.createdAt, false)}</small>}</div>
+                    <div className="key-balance"><span>Saldo key</span><strong>{formatRupiahBalance(key.balanceIdr)}</strong>{key.lastTopUp && <small>{key.lastTopUp.source === 'singapay' && key.lastTopUp.status === 'pending' ? 'QRIS menunggu' : key.lastTopUp.source === 'singapay' && key.lastTopUp.status === 'needs_review' ? 'QRIS perlu ditinjau' : 'Top-up'} {formatRupiah(key.lastTopUp.amountIdr)} · {formatDate(key.lastTopUp.createdAt, false)}</small>}</div>
                     <span className={`state ${key.status === 'revoked' ? 'state-neutral' : hasBalance ? 'state-success' : 'state-warning'}`}><i />{keyLabel}</span>
-                    {key.status === 'active' && <button className="button button-quiet button-small key-topup" type="button" onClick={() => onTopUp(client, key)}><Icon name="wallet" size={14} />Tambah saldo</button>}
-                    {key.status === 'active' && <button className="text-button danger-text key-revoke" type="button" onClick={() => onRevoke(client, key.id)}>Cabut key</button>}
+                    {key.status === 'active' && <div className="key-actions">
+                      <button className="button button-quiet button-small key-topup" type="button" onClick={() => onTopUp(client, key)}><Icon name="wallet" size={14} />{key.lastTopUp?.source === 'singapay' && activeTopUpStatuses.includes(key.lastTopUp.status ?? 'failed') ? 'Lihat QRIS' : 'Isi via QRIS'}</button>
+                      <button className="text-button key-manual" type="button" onClick={() => onManualTopUp(client, key)}>Penyesuaian manual</button>
+                      <button className="text-button danger-text key-revoke" type="button" onClick={() => onRevoke(client, key.id)}>Cabut key</button>
+                    </div>}
                   </div>
                 );
               })}
@@ -614,6 +749,102 @@ function ClientsPage({
       )}
       <p className="page-footnote"><Icon name="warning" size={14} />Saldo dicatat per key. Request ditolak sebelum diteruskan jika saldo di bawah Rp10.</p>
     </>
+  );
+}
+
+function QrisPaymentPanel({ topUp, loading, onReconcile }: {
+  topUp: TopUp;
+  loading: boolean;
+  onReconcile: () => void;
+}) {
+  const [qrImage, setQrImage] = useState('');
+  const [qrError, setQrError] = useState('');
+  const [copyState, setCopyState] = useState('');
+
+  useEffect(() => {
+    if (!topUp.qrData) {
+      setQrImage('');
+      return;
+    }
+    let cancelled = false;
+    setQrError('');
+    QRCode.toDataURL(topUp.qrData, {
+      errorCorrectionLevel: 'M',
+      margin: 2,
+      width: 240,
+      color: { dark: '#24352f', light: '#ffffff' },
+    })
+      .then((url) => { if (!cancelled) setQrImage(url); })
+      .catch(() => { if (!cancelled) setQrError('Kode QR tidak dapat ditampilkan. Salin kode QRIS di bawah untuk membukanya di aplikasi pembayaran.'); });
+    return () => { cancelled = true; };
+  }, [topUp.qrData]);
+
+  const statusLabels: Record<TopUpStatus, string> = {
+    creating: 'Membuat QRIS',
+    pending: 'Menunggu pembayaran',
+    paid: 'Pembayaran diterima',
+    expired: 'QRIS kedaluwarsa',
+    failed: 'QRIS gagal dibuat',
+    needs_review: 'Perlu ditinjau',
+  };
+  const statusMessage: Record<TopUpStatus, string> = {
+    creating: 'SingaPay sedang menyiapkan kode. Status akan diperbarui otomatis.',
+    pending: 'Pindai kode ini dengan aplikasi mobile banking atau e-wallet. Saldo masuk setelah pembayaran dikonfirmasi.',
+    paid: 'Pembayaran telah dikonfirmasi dan saldo key sudah diperbarui.',
+    expired: 'Kode ini sudah kedaluwarsa. Buat top-up baru untuk melanjutkan.',
+    failed: 'SingaPay menolak pembuatan kode. Saldo belum berubah.',
+    needs_review: topUp.reviewReason ?? 'Status pembayaran belum dapat dipastikan. Jangan bayar ulang dulu; periksa referensi ini.',
+  };
+
+  async function copyQrData() {
+    if (!topUp.qrData) return;
+    try {
+      await navigator.clipboard.writeText(topUp.qrData);
+      setCopyState('Kode QRIS disalin.');
+    } catch {
+      setCopyState('Tidak dapat menyalin kode dari browser ini.');
+    }
+    window.setTimeout(() => setCopyState(''), 2500);
+  }
+
+  return (
+    <section className={`qris-payment qris-payment-${topUp.status}`} aria-live="polite">
+      <div className="qris-payment-heading">
+        <div><span>Pembayaran QRIS</span><strong>{formatRupiah(topUp.amountIdr)}</strong></div>
+        <span className={`payment-status payment-status-${topUp.status}`}><i aria-hidden="true" />{statusLabels[topUp.status]}</span>
+      </div>
+      {topUp.status === 'pending' && topUp.qrData && (
+        <div className="qris-code-wrap">
+          {qrImage ? <img className="qris-code-image" src={qrImage} alt={`QRIS ${formatRupiah(topUp.amountIdr)} untuk top-up saldo`} /> : <div className="qris-code-placeholder" role="status">{qrError || 'Menyiapkan kode QR…'}</div>}
+          <p>{statusMessage[topUp.status]}</p>
+        </div>
+      )}
+      {(topUp.status !== 'pending' || !topUp.qrData) && <p className="qris-status-message">{statusMessage[topUp.status]}</p>}
+      <dl className="qris-payment-meta">
+        <div><dt>Referensi</dt><dd>{topUp.merchantRef ?? 'Belum tersedia'}</dd></div>
+        {topUp.status === 'pending' && topUp.expiresAt && <div><dt>Berlaku sampai</dt><dd>{formatDate(topUp.expiresAt)}</dd></div>}
+        {topUp.paidAt && <div><dt>Dibayar</dt><dd>{formatDate(topUp.paidAt)}</dd></div>}
+      </dl>
+      {topUp.status === 'pending' && topUp.qrData && (
+        <details className="qris-raw-data">
+          <summary>Lihat kode QRIS</summary>
+          <code>{topUp.qrData}</code>
+          <button className="text-button" type="button" onClick={() => void copyQrData()}><Icon name="copy" size={14} /> Salin kode</button>
+          {copyState && <span role="status">{copyState}</span>}
+        </details>
+      )}
+      {reconcilableTopUpStatuses.includes(topUp.status) && topUp.merchantRef && (
+        <button
+          className="button button-quiet button-small qris-reconcile"
+          type="button"
+          disabled={loading}
+          onClick={onReconcile}
+        >
+          {loading ? 'Memeriksa status…' : topUp.status === 'needs_review' ? 'Periksa ke SingaPay' : topUp.status === 'expired' ? 'Periksa pembayaran' : 'Perbarui status'}
+        </button>
+      )}
+      {qrError && <p className="qris-inline-error" role="alert">{qrError}</p>}
+    </section>
   );
 }
 

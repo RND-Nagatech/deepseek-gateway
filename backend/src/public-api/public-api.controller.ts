@@ -1,10 +1,11 @@
 import { Type } from 'class-transformer';
 import { IsDateString, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
-import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { Types } from 'mongoose';
 import { MINIMUM_BALANCE_IDR, MINIMUM_BALANCE_MICROS_IDR } from '../clients/balance';
 import { microsIdrToRupiah } from '../pricing/token-usage';
 import { UsageService } from '../usage/usage.service';
+import { SingaPayService } from '../payments/singapay.service';
 import { GatewayApiKeyGuard, GatewayApiRequest } from './api-key.guard';
 
 class UsageListQueryDto {
@@ -39,6 +40,23 @@ class UsageSummaryQueryDto {
   to?: string;
 }
 
+class CreateTopUpDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(1_000_000_000)
+  amountIdr!: number;
+}
+
+class TopUpListQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit = 50;
+}
+
 function toDateRange(query: { from?: string; to?: string }) {
   return {
     ...(query.from ? { from: new Date(query.from) } : {}),
@@ -49,7 +67,10 @@ function toDateRange(query: { from?: string; to?: string }) {
 @Controller('api/v1/me')
 @UseGuards(GatewayApiKeyGuard)
 export class PublicApiController {
-  constructor(private readonly usage: UsageService) {}
+  constructor(
+    private readonly usage: UsageService,
+    private readonly singaPay: SingaPayService,
+  ) {}
 
   @Get('balance')
   balance(@Req() request: GatewayApiRequest) {
@@ -92,6 +113,50 @@ export class PublicApiController {
     return this.usage.summaryForKey(
       request.gatewayApiIdentity!.key._id as Types.ObjectId,
       { ...toDateRange(query), defaultDays: 30 },
+    );
+  }
+
+  @Post('topups')
+  createTopUp(
+    @Req() request: GatewayApiRequest,
+    @Body() dto: CreateTopUpDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const identity = request.gatewayApiIdentity!;
+    return this.singaPay.createQrisTopUp(
+      identity.key._id as Types.ObjectId,
+      dto.amountIdr,
+      idempotencyKey ?? '',
+      identity.client._id as Types.ObjectId,
+    );
+  }
+
+  @Get('topups')
+  listTopUps(@Req() request: GatewayApiRequest, @Query() query: TopUpListQueryDto) {
+    return this.singaPay.listTopUps(request.gatewayApiIdentity!.key._id as Types.ObjectId, query.limit);
+  }
+
+  @Get('topups/active')
+  activeTopUp(@Req() request: GatewayApiRequest) {
+    const identity = request.gatewayApiIdentity!;
+    return this.singaPay.getActiveTopUp(
+      identity.key._id as Types.ObjectId,
+      identity.client._id as Types.ObjectId,
+    );
+  }
+
+  @Get('topups/:merchantRef')
+  getTopUp(@Req() request: GatewayApiRequest, @Param('merchantRef') merchantRef: string) {
+    return this.singaPay.getTopUp(request.gatewayApiIdentity!.key._id as Types.ObjectId, merchantRef);
+  }
+
+  @Post('topups/:merchantRef/reconcile')
+  reconcileTopUp(@Req() request: GatewayApiRequest, @Param('merchantRef') merchantRef: string) {
+    const identity = request.gatewayApiIdentity!;
+    return this.singaPay.reconcileTopUp(
+      identity.key._id as Types.ObjectId,
+      merchantRef,
+      identity.client._id as Types.ObjectId,
     );
   }
 }

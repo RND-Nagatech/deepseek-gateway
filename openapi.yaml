@@ -3,7 +3,7 @@ info:
   title: DeepSeek Monitor Self-Service API
   version: 1.0.0
   description: |
-    Read-only endpoints for the client and API key represented by the supplied
+    Balance, usage, and QRIS top-up endpoints for the client and API key represented by the supplied
     DeepSeek key. The key must be registered and active in DeepSeek Monitor.
     Token cache hit and cache miss values are details within input tokens;
     billable tokens are input plus output, so cache tokens are not added twice.
@@ -18,6 +18,8 @@ security:
 tags:
   - name: Account
     description: Balance and usage information for the authenticated API key
+  - name: Top-ups
+    description: Create QRIS payments and inspect top-ups for the authenticated API key
 paths:
   /api/v1/me/balance:
     get:
@@ -37,6 +39,105 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
         '500':
           $ref: '#/components/responses/InternalServerError'
+  /api/v1/me/topups:
+    get:
+      operationId: listMyTopUps
+      tags: [Top-ups]
+      summary: List QRIS top-ups for the authenticated API key
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum top-ups to return
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: QRIS top-ups, newest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopUpPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/me/topups/active:
+    get:
+      operationId: getMyActiveTopUp
+      tags: [Top-ups]
+      summary: Get the active QRIS top-up for this API key
+      description: Returns the current creating, pending, or review-required payment, if one exists.
+      responses:
+        '200':
+          description: Active top-up status and QRIS details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopUpRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No active QRIS top-up exists for this API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: createMyQrisTopUp
+      tags: [Top-ups]
+      summary: Create a QRIS payment for this API key
+      description: |
+        The returned QRIS does not add funds immediately. The balance is credited
+        only after a verified SingaPay callback confirms the exact IDR amount.
+        Reuse the same Idempotency-Key after a network timeout; do not submit a
+        fresh key until the earlier payment status has been checked.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: A unique client-generated key for this payment attempt; 8 to 128 safe characters.
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._:-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amountIdr:
+                  type: integer
+                  minimum: 1
+                  maximum: 1000000000
+                  description: Whole rupiah amount to add after the provider confirms payment
+              required: [amountIdr]
+      responses:
+        '201':
+          description: QRIS payment attempt created or reused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopUpRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Idempotency-Key is already associated with a different amount or in-flight creation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/me/usage:
     get:
       operationId: listMyUsage
@@ -78,6 +179,66 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
         '500':
           $ref: '#/components/responses/InternalServerError'
+  /api/v1/me/topups/{merchantRef}:
+    get:
+      operationId: getMyTopUp
+      tags: [Top-ups]
+      summary: Get the status of one QRIS top-up
+      parameters:
+        - name: merchantRef
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Top-up status and QRIS details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopUpRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Top-up does not belong to this API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/me/topups/{merchantRef}/reconcile:
+    post:
+      operationId: reconcileMyTopUp
+      tags: [Top-ups]
+      summary: Refresh a QRIS top-up status from SingaPay
+      description: |
+        Checks the existing SingaPay transaction and updates this payment record.
+        It never creates a replacement QR. A verified paid result credits the key
+        balance once; ambiguous results remain marked for review.
+      parameters:
+        - name: merchantRef
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '201':
+          description: Reconciled top-up status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopUpRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Top-up does not belong to this API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/me/usage/summary:
     get:
       operationId: getMyUsageSummary
@@ -182,6 +343,53 @@ components:
           type: string
           format: date-time
       required: [amountIdr, createdAt]
+    TopUpRecord:
+      type: object
+      properties:
+        amountIdr:
+          type: integer
+        currency:
+          type: string
+          const: IDR
+        method:
+          type: string
+          const: qris
+        source:
+          type: string
+          enum: [manual, singapay]
+        status:
+          type: string
+          enum: [creating, pending, paid, expired, failed, needs_review]
+        merchantRef:
+          type: [string, 'null']
+        providerReference:
+          type: [string, 'null']
+        qrData:
+          type: [string, 'null']
+          description: EMV QRIS payload; present while a generated QR is available
+        expiresAt:
+          type: [string, 'null']
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        paidAt:
+          type: [string, 'null']
+          format: date-time
+        reviewReason:
+          type: [string, 'null']
+      required: [amountIdr, currency, method, source, status, merchantRef, providerReference, qrData, expiresAt, createdAt, paidAt, reviewReason]
+    TopUpPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TopUpRecord'
+        nextCursor:
+          type: 'null'
+          description: Pagination cursor is not currently used for this response.
+      required: [items, nextCursor]
     BalanceResponse:
       type: object
       properties:
