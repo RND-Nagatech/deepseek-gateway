@@ -41,12 +41,27 @@ Cakupan: autentikasi, Virtual Account (VA), QRIS penerimaan pembayaran, serta ca
 
 ## 4. Pembuatan Virtual Account
 
-1. Pilih bank dan model VA sesuai kebutuhan: temporary atau permanent; `closed` untuk nominal tetap dan `open` untuk nominal fleksibel. Untuk invoice SaaS satu kali, evaluasi temporary dan nominal tetap sesuai dukungan merchant.
-2. Buka [dokumentasi Virtual Account](https://docs.singapay.id/api-reference/virtual-account/introduction), lalu bagian **POST Create**. Verifikasi URL, field wajib, batas nominal, waktu kedaluwarsa, dan aturan keunikan untuk bank/merchant Anda. Detail endpoint create belum diverifikasi dalam dokumen ini; jangan menebaknya.
-3. Backend mengirim request create menggunakan token dan menyimpan respons beserta ID/nomor VA dan kaitan ke invoice.
-4. Tampilkan nomor VA, bank, jumlah dan tenggat kepada pelanggan. Anggap pembuatan VA sukses sebagai **menunggu pembayaran**, bukan pembayaran lunas.
-5. VA adalah instrumen, sedangkan VA Transaction adalah catatan pembayaran. Satu VA dapat menerima lebih dari satu transaksi; cocokkan pembayaran menggunakan ID transaksi, nominal, account, serta invoice. Jangan mendeduplikasi semua pembayaran berdasarkan nomor VA saja.
-6. Untuk timeout saat pembuatan, periksa hasil dan kemampuan pencarian/idempotensi berdasarkan kontrak VA resmi sebelum mencoba ulang. Jika hasil masih tidak pasti, tandai `needs_review`.
+1. Buat VA dinamis satu kali menggunakan `POST /api/v1.0/virtual-accounts/{account_id}`. Pilih `bank_code` yang sudah aktif untuk akun merchant. Kode yang tercantum di dokumentasi adalah `BCA`, `BNI`, `BRI`, `MANDIRI`, `PERMATA`, `MAYBANK`, `CIMB`, `BSI`, `MUAMALAT`, `BNC`, `OCBC`, dan `DANAMON`; aktivasi bank mengikuti konfigurasi merchant.
+2. Untuk nominal top-up tetap, kirim `kind: "temporary"`, `amount_type: "closed"`, `amount`, `expired_at`, `max_usage: 1`, dan `merchant_reff_no` yang unik. `expired_at` harus berupa string Unix timestamp dalam milidetik (13 digit). Contoh:
+
+   ```json
+   {
+     "bank_code": "BCA",
+     "kind": "temporary",
+     "amount_type": "closed",
+     "amount": 50000,
+     "expired_at": "1793091600000",
+     "max_usage": 1,
+     "merchant_reff_no": "DS-REF-UNIK-001",
+     "name": "DeepSeek Monitor top-up"
+   }
+   ```
+
+   Untuk gateway ini, nominal minimum yang diminta adalah Rp10.000. Ganti referensi dan expiry pada setiap permintaan.
+3. Simpan ID VA, nomor, bank, nominal, status, referensi dan expiry dari respons. Tampilkan nomor VA, bank, jumlah dan tenggat kepada pelanggan. VA berhasil dibuat berarti **menunggu pembayaran**, bukan lunas.
+4. Untuk memulihkan respons create yang hilang, cari VA melalui `GET /api/v1.0/virtual-accounts/{account_id}?merchant_reff_no={merchantRef}`. Filter tersebut adalah pencarian substring, jadi backend harus mencocokkan `merchant_reff_no` secara persis. Untuk memastikan pembayaran, periksa `GET /api/v1.0/va-transactions/{account_id}` dengan filter referensi yang sama dan validasi transaksi yang dikembalikan. Kedua endpoint mendukung pagination.
+5. VA adalah instrumen, sedangkan VA Transaction adalah catatan pembayaran. Untuk top-up satu kali, batasi `max_usage` ke satu. Deduplikasi pembayaran memakai `transaction_id` dan referensi merchant; cocokkan nominal, mata uang, nomor VA, dan bank sebelum saldo dikreditkan.
+6. Jika pembuatan timeout, jangan langsung mengirim POST ulang. Cari transaksi lalu VA berdasarkan referensi. Buat pengganti hanya jika pencarian selesai dan VA lama tidak ditemukan atau sudah kedaluwarsa; bila pagination tidak lengkap atau hasil ambigu, tandai `needs_review`.
 
 ## 5. Pembuatan QRIS dinamis
 
@@ -76,6 +91,8 @@ Cakupan: autentikasi, Virtual Account (VA), QRIS penerimaan pembayaran, serta ca
    | `va-transaction` | Pembayaran VA |
    | `qris-acquirer-transaction` | Pembayaran QRIS masuk |
 
+   Untuk `va-transaction`, referensi merchant berada di `data.transaction.reff_no`, ID pembayaran di `transaction_id`, dan detail nomor/bank pada `data.payment.additional_info`. Cocokkan `va_number`, `bank.bank_code`, nominal IDR, `amount_type: "closed"`, serta referensi sebelum mengkredit saldo. Jangan menganggap pembuatan VA sebagai pembayaran.
+
 2. Pertahankan raw body dan header yang diterima. Validasi `X-PARTNER-ID`, timestamp, dan `X-Signature` sesuai [Security and Signature Validation](https://docs.singapay.id/api-reference/webhooks/security-and-signature). Gunakan path **publik** yang didaftarkan, termasuk query string jika ada, meskipun reverse proxy mengubah path menuju backend. Cocokkan signature secara constant-time. Batasi IP sumber apabila daftar resmi tersedia.
 3. Dokumentasi menyebut HMAC-SHA512 dengan client secret atas `METHOD:ENDPOINT:ACCESS_TOKEN:HASHED_BODY:TIMESTAMP`; hash body SHA-256. Dokumen juga menyebut normalisasi JSON dengan pengurutan key rekursif, tetapi di bagian lain menyebut hash raw body langsung. **Ini perlu dikonfirmasi dengan SingaPay dan diuji menggunakan contoh callback nyata/test vector sebelum production**; jangan menerima callback tanpa validasi hanya untuk mengatasi mismatch.
 4. Setelah signature valid, simpan event secara durable sebelum membalas sukses; gunakan unique constraint atas identitas event/transaksi yang stabil, termasuk account/merchant dan tipe event. Balas HTTP 2xx dengan cepat setelah tersimpan atau setelah diketahui duplikat. Gagal signature: 401. Bila penyimpanan gagal, berikan error agar pengiriman dapat dicoba kembali.
@@ -93,7 +110,7 @@ Cakupan: autentikasi, Virtual Account (VA), QRIS penerimaan pembayaran, serta ca
 ## 8. Checklist sebelum produksi
 
 - [ ] Klarifikasi perbedaan dokumentasi token v1.1 dan uji kombinasi header.
-- [ ] Verifikasi endpoint dan seluruh field Create VA dengan dokumentasi resmi terbaru.
+- [ ] Verifikasi bank aktif, batas nominal, dan masa berlaku untuk akun merchant.
 - [ ] Klarifikasi normalisasi signature webhook dengan test vector resmi; uji request yang dimodifikasi dan signature palsu.
 - [ ] Uji VA dan QRIS: pembayaran berhasil, kedaluwarsa, duplikat, timeout create, callback terlambat/tidak berurutan, nominal tidak cocok, dan callback yang dikirim ulang.
 - [ ] Uji isolasi tenant, penguncian transaksi, invoice dibayar tepat satu kali, serta recovery worker.
@@ -103,8 +120,8 @@ Cakupan: autentikasi, Virtual Account (VA), QRIS penerimaan pembayaran, serta ca
 
 ## Referensi resmi
 
-- [Indeks dokumentasi](https://docs.singapay.id/llms.txt) — tidak dapat diakses saat penyusunan; halaman lain ditemukan melalui pencarian.
+- [Indeks dokumentasi](https://docs.singapay.id/llms.txt).
 - [Authentication](https://docs.singapay.id/api-reference/authentication) dan [Building X-Signature](https://docs.singapay.id/api-reference/building-x-signature).
-- [Virtual Account overview](https://docs.singapay.id/api-reference/virtual-account/introduction).
+- [Virtual Account overview](https://docs.singapay.id/api-reference/virtual-account/introduction), [Create VA](https://docs.singapay.id/api-reference/virtual-account/create), [List VA](https://docs.singapay.id/api-reference/virtual-account/list), dan [VA transaction list](https://docs.singapay.id/api-reference/va-transaction/list).
 - [Generate QRIS](https://docs.singapay.id/api-reference/qris-money-in/generate) dan [QRIS list](https://docs.singapay.id/api-reference/qris-money-in/list).
 - [VA webhook](https://docs.singapay.id/api-reference/webhooks/va-transaction), [QRIS webhook](https://docs.singapay.id/api-reference/webhooks/qris-acquirer), [shared endpoints](https://docs.singapay.id/api-reference/webhooks/shared-endpoints), dan [webhook security](https://docs.singapay.id/api-reference/webhooks/security-and-signature).

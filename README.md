@@ -67,27 +67,27 @@ The SDK appends its normal endpoint path, such as `/chat/completions` or `/respo
 
 Requests must pass through the gateway to appear in this dashboard. This development server binds to loopback by default. Before making it reachable by other machines, set a strong `ADMIN_TOKEN` and `KEY_HASH_SECRET`, use TLS, and restrict access to the dashboard/admin API.
 
-## Top up a key with SingaPay QRIS
+## Top up a key with SingaPay
 
 Copy the `SINGAPAY_*` settings from `backend/.env.example` into `backend/.env`, then set the client ID, client secret, partner ID, and receiving account ID issued for your merchant. The configured base URL defaults to the SingaPay sandbox; change it to `https://payment-b2b.singapay.id` only after the merchant is ready for production. A custom HTTPS reverse-proxy URL with a path prefix is also supported, for example `https://singapay.nagatech.id/sandbox`; API routes are appended below that prefix. Never put these credentials in the frontend or commit them.
 
-Register `https://deepseek.nagatech.id/api/webhooks/singapay` as the merchant's transaction callback URL. The reverse proxy must preserve the `/api/webhooks/singapay` path. The dashboard's **Isi via QRIS** action creates a payment for that one key; it does not change balance until a signed callback confirms the same IDR amount. **Penyesuaian manual** remains an immediate admin-only credit and records its reason.
+Register `https://deepseek.nagatech.id/api/webhooks/singapay` as the merchant's transaction callback URL. The reverse proxy must preserve the `/api/webhooks/singapay` path. The dashboard can create QRIS or a temporary, one-use, fixed-amount Virtual Account for a key. VA top-ups start at Rp10,000; bank availability follows the merchant's SingaPay activation. Neither method changes balance until a signed callback confirms the payment. **Penyesuaian manual** remains an immediate admin-only credit and records its reason.
 
 The backend uses the HMAC-SHA512 headers shown by SingaPay's Access Token v1.1 documentation. SingaPay's webhook page gives conflicting instructions for hashing the callback body, so the verifier accepts either its documented recursively sorted JSON form or the raw-body form while still requiring a valid HMAC signature. Verify both authentication and callback behavior with the merchant's sandbox account before switching to production.
 
 SingaPay's connectivity probe body (`status: 200`, `success: true`, `data: "VA Payment Notification testing"`) is acknowledged with `200` and `{ "status": "success" }` because it contains no transaction. Actual transaction callbacks still require valid SingaPay signature headers before they can be processed.
 
-If QRIS creation fails upstream, the dashboard error includes a log reference. Match it against the backend's NestJS application logs; the log records the upstream HTTP status and a sanitized response summary, not credentials or signatures.
+If payment creation fails upstream, the dashboard error includes a log reference. Match it against the backend's NestJS application logs; the log records the upstream HTTP status and a sanitized response summary, not credentials or signatures.
 
 ## Read balance and usage from another application
 
 The self-service API uses the same registered DeepSeek key as the proxy. It only returns data for the key sent with the request, even when its client has other keys. Send the registered key with the Authorization header using the Bearer scheme, or use the x-api-key header. Keep this key in a trusted server-side environment.
 
 - GET /api/v1/me/balance returns the current rupiah balance, latest top-up, and whether the key can make a request. A balance below Rp10 is blocked by the proxy; a later usage charge can make the balance negative.
-- POST /api/v1/me/topups creates a QRIS payment attempt for this key. Send a unique `Idempotency-Key` header and an integer `amountIdr`; the balance changes only after a verified payment callback.
-- GET /api/v1/me/topups lists QRIS payment attempts; GET /api/v1/me/topups/active returns the latest payment that still needs attention; GET /api/v1/me/topups/{merchantRef} returns a payment status and its QR data.
-- POST /api/v1/me/topups/{merchantRef}/reconcile asks SingaPay for the existing payment status. It never creates another QR and can credit a confirmed payment once, including a late payment after expiry.
-- POST /api/v1/me/topups/{merchantRef}/retry checks SingaPay again and returns the existing QR if found. It creates a replacement only after a complete search finds no matching transaction; ambiguous or incomplete searches are blocked. Use a new Idempotency-Key for each recovery attempt.
+- POST /api/v1/me/topups creates a QRIS payment attempt. POST /api/v1/me/topups/va creates a temporary VA; send `amountIdr` (minimum 10,000) and a documented `bankCode`. Both require a unique `Idempotency-Key`, and neither credits balance before a verified callback.
+- GET /api/v1/me/topups lists payment attempts; GET /api/v1/me/topups/active returns the latest payment that still needs attention; GET /api/v1/me/topups/{merchantRef} returns status and method-specific details such as QR data or VA number.
+- POST /api/v1/me/topups/{merchantRef}/reconcile asks SingaPay for the existing payment status. It never creates another payment and can credit a confirmed payment once, including a late payment after expiry.
+- POST /api/v1/me/topups/{merchantRef}/retry checks SingaPay again and returns existing payment details if found. It creates a replacement only after a complete search confirms the old payment is absent or expired; ambiguous or incomplete searches are blocked. Use a new Idempotency-Key for each recovery attempt.
 - GET /api/v1/me/usage/summary returns request/status totals, token totals, cost, and a daily series. It defaults to the last 30 days.
 - GET /api/v1/me/usage returns individual request records. Use limit (up to 100), optional ISO 8601 from/to filters (to is exclusive), and the returned nextCursor to fetch more records.
 
@@ -102,6 +102,11 @@ For example, set GATEWAY_URL to https://deepseek.nagatech.id and DEEPSEEK_API_KE
       -H 'Idempotency-Key: billing-cycle-2026-10' \
       -H 'Content-Type: application/json' \
       -d '{"amountIdr":50000}'
+    curl "$GATEWAY_URL/api/v1/me/topups/va" \
+      -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
+      -H 'Idempotency-Key: topup-va-2026-10' \
+      -H 'Content-Type: application/json' \
+      -d '{"amountIdr":50000,"bankCode":"BCA"}'
 
 For browser-based consumers, configure CORS_ORIGINS in backend/.env as a comma-separated list of trusted origins, for example https://dashboard.example.com. Server-to-server consumers do not need a CORS entry.
 

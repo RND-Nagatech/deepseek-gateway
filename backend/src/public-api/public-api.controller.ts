@@ -1,11 +1,11 @@
 import { Type } from 'class-transformer';
-import { IsDateString, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsDateString, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { Body, Controller, Get, Headers, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { Types } from 'mongoose';
 import { MINIMUM_BALANCE_IDR, MINIMUM_BALANCE_MICROS_IDR } from '../clients/balance';
 import { microsIdrToRupiah } from '../pricing/token-usage';
 import { UsageService } from '../usage/usage.service';
-import { SingaPayService } from '../payments/singapay.service';
+import { SingaPayService, SINGAPAY_VA_BANK_CODES, type SingaPayVaBankCode } from '../payments/singapay.service';
 import { GatewayApiKeyGuard, GatewayApiRequest } from './api-key.guard';
 
 class UsageListQueryDto {
@@ -46,6 +46,17 @@ class CreateTopUpDto {
   @Min(1)
   @Max(1_000_000_000)
   amountIdr!: number;
+}
+
+class CreateVaTopUpDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(10_000)
+  @Max(1_000_000_000)
+  amountIdr!: number;
+
+  @IsIn(SINGAPAY_VA_BANK_CODES)
+  bankCode!: SingaPayVaBankCode;
 }
 
 class TopUpListQueryDto {
@@ -131,6 +142,22 @@ export class PublicApiController {
     );
   }
 
+  @Post('topups/va')
+  createVaTopUp(
+    @Req() request: GatewayApiRequest,
+    @Body() dto: CreateVaTopUpDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const identity = request.gatewayApiIdentity!;
+    return this.singaPay.createVaTopUp(
+      identity.key._id as Types.ObjectId,
+      dto.amountIdr,
+      dto.bankCode,
+      idempotencyKey ?? '',
+      identity.client._id as Types.ObjectId,
+    );
+  }
+
   @Get('topups')
   listTopUps(@Req() request: GatewayApiRequest, @Query() query: TopUpListQueryDto) {
     return this.singaPay.listTopUps(request.gatewayApiIdentity!.key._id as Types.ObjectId, query.limit);
@@ -167,7 +194,7 @@ export class PublicApiController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     const identity = request.gatewayApiIdentity!;
-    return this.singaPay.retryQrisTopUp(
+    return this.singaPay.retryTopUp(
       identity.key._id as Types.ObjectId,
       merchantRef,
       idempotencyKey ?? '',

@@ -18,6 +18,13 @@ const RESUMABLE_TOPUP_STATUSES = ['creating', 'pending', 'needs_review', 'expire
 const REQUEST_IN_PROGRESS_STATUSES = ['creating', 'pending'];
 const RETRYABLE_ATTEMPT_STATUSES = ['needs_review', 'expired', 'failed'];
 const DEFAULT_QR_LIFETIME_MS = 60 * 60 * 1000;
+const DEFAULT_VA_LIFETIME_MS = 60 * 60 * 1000;
+
+export const SINGAPAY_VA_BANK_CODES = [
+  'BCA', 'BNI', 'BRI', 'MANDIRI', 'PERMATA', 'MAYBANK', 'CIMB',
+  'BSI', 'MUAMALAT', 'BNC', 'OCBC', 'DANAMON',
+] as const;
+export type SingaPayVaBankCode = typeof SINGAPAY_VA_BANK_CODES[number];
 
 type TopUpStatus = NonNullable<KeyTopUp['status']>;
 
@@ -52,10 +59,44 @@ interface QrisSearchResult {
   incompleteReason?: string;
 }
 
+type ProviderRecord = Record<string, unknown>;
+
+interface ProviderSearchResult {
+  records: ProviderRecord[];
+  complete: boolean;
+  diagnosticId?: string;
+  incompleteReason?: string;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function providerBankCode(record: ProviderRecord): string | null {
+  const bank = asRecord(record.bank);
+  const candidates = [bank?.bank_code, bank?.short_name, record.bank_code, record.code]
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => value.trim().toUpperCase().replace(/^VA[_-]/, ''));
+  return candidates.find((value) => SINGAPAY_VA_BANK_CODES.includes(value as SingaPayVaBankCode)) ?? null;
+}
+
+function providerAmount(record: ProviderRecord): { value: number; currency: string } | null {
+  const amount = asRecord(record.amount);
+  const value = Number(amount?.value ?? record.amount);
+  const currency = typeof amount?.currency === 'string' ? amount.currency : '';
+  return Number.isSafeInteger(value) ? { value, currency } : null;
+}
+
+function providerExpiry(value: unknown): Date | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const parsed = /^\d{13}$/.test(value) ? new Date(Number(value)) : new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 function headerValue(value: string | string[] | undefined): string {
@@ -170,7 +211,10 @@ export class SingaPayService {
   ) {
     this.validateIdempotencyKey(idempotencyKey);
     const existing = await this.findAttempt(keyId, { idempotencyKey }, clientId);
-    if (existing) return this.reuseIdempotentAttempt(existing, amountIdr);
+    if (existing) {
+      if (existing.method === 'va') throw new ConflictException('Idempotency-Key ini sudah digunakan untuk Virtual Account. Gunakan key baru untuk QRIS.');
+      return this.reuseIdempotentAttempt(existing, amountIdr);
+    }
     const active = await this.findBlockingAttempt(keyId, clientId);
     if (active) {
       throw new ConflictException(`Top-up ${active.merchantRef ?? ''} masih aktif. Periksa status QRIS yang ada sebelum membuat top-up baru.`);
@@ -222,7 +266,10 @@ export class SingaPayService {
 
     if (!reserved) {
       const concurrentAttempt = await this.findAttempt(keyId, { idempotencyKey }, clientId);
-      if (concurrentAttempt) return this.reuseIdempotentAttempt(concurrentAttempt, amountIdr);
+      if (concurrentAttempt) {
+        if (concurrentAttempt.method === 'va') throw new ConflictException('Idempotency-Key ini sudah digunakan untuk Virtual Account. Gunakan key baru untuk QRIS.');
+        return this.reuseIdempotentAttempt(concurrentAttempt, amountIdr);
+      }
       const otherActiveAttempt = await this.findBlockingAttempt(keyId, clientId);
       if (otherActiveAttempt) {
         throw new ConflictException(`Top-up ${otherActiveAttempt.merchantRef ?? ''} masih aktif. Periksa status QRIS yang ada sebelum membuat top-up baru.`);
@@ -311,6 +358,205 @@ export class SingaPayService {
     return this.toView(saved);
   }
 
+  async createVaTopUp(
+    keyId: Types.ObjectId | string,
+    amountIdr: number,
+    bankCode: SingaPayVaBankCode,
+    idempotencyKey: string,
+    clientId?: Types.ObjectId | string,
+    retryOfMerchantRef?: string,
+  ) {
+    this.validateIdempotencyKey(idempotencyKey);
+    if (!Number.isSafeInteger(amountIdr) || amountIdr < 10_000 || amountIdr > 1_000_000_000) {
+      throw new BadRequestException('Nominal Virtual Account harus berupa rupiah bulat antara Rp10.000 dan Rp1.000.000.000.');
+    }
+    if (!SINGAPAY_VA_BANK_CODES.includes(bankCode)) {
+      throw new BadRequestException('Kode bank Virtual Account tidak didukung.');
+    }
+    const existing = await this.findAttempt(keyId, { idempotencyKey }, clientId);
+    if (existing) {
+      if (existing.method !== 'va' || existing.bankCode !== bankCode) {
+        throw new ConflictException('Idempotency-Key sudah digunakan untuk metode atau bank berbeda. Gunakan key baru.');
+      }
+      return this.reuseIdempotentAttempt(existing, amountIdr);
+    }
+    const active = await this.findBlockingAttempt(keyId, clientId);
+    if (active) {
+      throw new ConflictException(`Top-up ${active.merchantRef ?? ''} masih aktif. Periksa pembayaran yang ada sebelum membuat top-up baru.`);
+    }
+    if (clientId) {
+      const client = await this.clients.findOne({ _id: clientId, status: 'active' }).select('_id').lean().exec();
+      if (!client) throw new NotFoundException('Client tidak ditemukan atau sedang dijeda.');
+    }
+    const config = this.getConfig();
+    const token = await this.getAccessToken(config);
+    const createdAt = new Date();
+    const expiresAt = new Date(createdAt.getTime() + DEFAULT_VA_LIFETIME_MS);
+    const merchantRef = `DS${Date.now().toString(36).toUpperCase().slice(-8)}${randomBytes(16).toString('hex').toUpperCase()}`;
+    const reserved = await this.keys.findOneAndUpdate(
+      {
+        _id: keyId,
+        status: 'active',
+        ...(clientId ? { clientId } : {}),
+        $and: [
+          { topUps: { $not: { $elemMatch: { idempotencyKey } } } },
+          { topUps: { $not: { $elemMatch: { source: 'singapay', status: { $in: REQUEST_IN_PROGRESS_STATUSES } } } } },
+          { topUps: { $not: { $elemMatch: { source: 'singapay', status: { $in: RETRYABLE_ATTEMPT_STATUSES }, retryAllowed: { $ne: true } } } } },
+          ...(retryOfMerchantRef ? [{ topUps: { $elemMatch: {
+            merchantRef: retryOfMerchantRef,
+            source: 'singapay',
+            status: { $in: RETRYABLE_ATTEMPT_STATUSES },
+            retryAllowed: true,
+          } } }] : []),
+        ],
+      },
+      {
+        $push: {
+          topUps: {
+            amountIdr,
+            createdAt,
+            source: 'singapay',
+            status: 'creating',
+            method: 'va',
+            merchantRef,
+            idempotencyKey,
+            bankCode,
+            ...(retryOfMerchantRef ? { retryOfMerchantRef } : {}),
+            expiresAt,
+          },
+        },
+      },
+      { new: true, runValidators: true },
+    ).lean().exec();
+
+    if (!reserved) {
+      const concurrentAttempt = await this.findAttempt(keyId, { idempotencyKey }, clientId);
+      if (concurrentAttempt) {
+        if (concurrentAttempt.method !== 'va' || concurrentAttempt.bankCode !== bankCode) {
+          throw new ConflictException('Idempotency-Key sudah digunakan untuk metode atau bank berbeda. Gunakan key baru.');
+        }
+        return this.reuseIdempotentAttempt(concurrentAttempt, amountIdr);
+      }
+      const otherActiveAttempt = await this.findBlockingAttempt(keyId, clientId);
+      if (otherActiveAttempt) {
+        throw new ConflictException(`Top-up ${otherActiveAttempt.merchantRef ?? ''} masih aktif. Periksa pembayaran yang ada sebelum membuat top-up baru.`);
+      }
+      if (retryOfMerchantRef) {
+        const previousAttempt = await this.findAttempt(keyId, { merchantRef: retryOfMerchantRef }, clientId);
+        if (previousAttempt?.status === 'paid') return this.toView(previousAttempt);
+        throw new ConflictException('Status top-up lama berubah saat VA baru disiapkan. Muat ulang status sebelum mencoba lagi.');
+      }
+      if (!(await this.keys.exists({ _id: keyId, ...(clientId ? { clientId } : {}) }))) {
+        throw new NotFoundException('API key not found for this client.');
+      }
+      throw new ConflictException('A revoked API key cannot be topped up.');
+    }
+
+    const requestBody = {
+      bank_code: bankCode,
+      kind: 'temporary',
+      amount_type: 'closed',
+      amount: amountIdr,
+      expired_at: String(expiresAt.getTime()),
+      max_usage: 1,
+      merchant_reff_no: merchantRef,
+      name: 'DeepSeek Monitor top-up',
+    };
+    const diagnosticId = randomBytes(6).toString('hex');
+    const providerBase = new URL(config.baseUrl);
+    const providerTarget = `${providerBase.host}${providerBase.pathname}`;
+    let response: Response;
+    let responseBody: unknown;
+    let responseText = '';
+    try {
+      response = await fetch(
+        `${config.baseUrl}/api/v1.0/virtual-accounts/${encodeURIComponent(config.accountId)}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'X-PARTNER-ID': config.partnerId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+          signal: AbortSignal.timeout(20_000),
+        },
+      );
+      responseText = await response.text();
+      responseBody = safeJsonParse(responseText);
+    } catch (error) {
+      const details = error instanceof Error ? safeDiagnosticText(`${error.name}: ${error.message}`) : 'unknown transport error';
+      this.logger.error(`VA create request failed; reference=${diagnosticId}; target=${providerTarget}; details=${details}`);
+      await this.setAttemptState(keyId, merchantRef, 'needs_review', `Respons pembuatan VA tidak terkonfirmasi; referensi log ${diagnosticId}.`);
+      throw new ServiceUnavailableException(`SingaPay belum mengonfirmasi pembuatan VA. Periksa status top-up sebelum mencoba lagi. Referensi log: ${diagnosticId}.`);
+    }
+
+    if (!response.ok) {
+      const providerDetails = providerErrorSummary(responseBody, responseText);
+      this.logger.error(`VA create rejected; reference=${diagnosticId}; target=${providerTarget}; httpStatus=${response.status}; statusText=${safeDiagnosticText(response.statusText)}; contentType=${safeDiagnosticText(response.headers.get('content-type') ?? 'unknown')}; provider=${providerDetails}`);
+      const status: TopUpStatus = response.status >= 500 ? 'needs_review' : 'failed';
+      await this.keys.updateOne(
+        { _id: keyId, topUps: { $elemMatch: { merchantRef, status: 'creating' } } },
+        {
+          $set: {
+            'topUps.$[payment].status': status,
+            'topUps.$[payment].retryAllowed': response.status < 500,
+            'topUps.$[payment].reviewReason': `SingaPay menolak pembuatan VA (HTTP ${response.status}). Referensi log: ${diagnosticId}.`,
+          },
+        },
+        { arrayFilters: [{ 'payment.merchantRef': merchantRef, 'payment.status': 'creating' }] },
+      ).exec();
+      throw new ServiceUnavailableException(`SingaPay gagal membuat Virtual Account (HTTP ${response.status}). Referensi log: ${diagnosticId}.`);
+    }
+
+    const envelope = asRecord(responseBody);
+    const providerData = asRecord(envelope?.data);
+    const bank = asRecord(providerData?.bank);
+    const amount = providerData ? providerAmount(providerData) : null;
+    const providerVaId = typeof providerData?.id === 'string' ? providerData.id : null;
+    const vaNumber = typeof providerData?.number === 'string' ? providerData.number : null;
+    const returnedBankCode = providerData ? providerBankCode(providerData) : null;
+    if (envelope?.success !== true || !providerData || !providerVaId || !vaNumber
+      || returnedBankCode !== bankCode || !amount || amount.value !== amountIdr || amount.currency !== 'IDR') {
+      const providerDetails = providerErrorSummary(responseBody, responseText);
+      this.logger.error(`VA create returned an unusable response; reference=${diagnosticId}; target=${providerTarget}; httpStatus=${response.status}; provider=${providerDetails}`);
+      await this.keys.updateOne(
+        { _id: keyId, topUps: { $elemMatch: { merchantRef, status: 'creating' } } },
+        {
+          $set: {
+            'topUps.$[payment].status': 'needs_review',
+            'topUps.$[payment].providerVirtualAccountId': providerVaId,
+            'topUps.$[payment].vaNumber': vaNumber,
+            'topUps.$[payment].bankName': typeof bank?.short_name === 'string' ? bank.short_name : null,
+            'topUps.$[payment].reviewReason': `Respons SingaPay belum dapat diverifikasi. Periksa status top-up. Referensi log: ${diagnosticId}.`,
+          },
+        },
+        { arrayFilters: [{ 'payment.merchantRef': merchantRef, 'payment.status': 'creating' }] },
+      ).exec();
+      throw new ServiceUnavailableException(`Respons SingaPay belum dapat diverifikasi. Periksa status top-up sebelum mencoba lagi. Referensi log: ${diagnosticId}.`);
+    }
+
+    await this.keys.updateOne(
+      { _id: keyId, topUps: { $elemMatch: { merchantRef, status: 'creating' } } },
+      {
+        $set: {
+          'topUps.$[payment].status': 'pending',
+          'topUps.$[payment].providerVirtualAccountId': providerVaId,
+          'topUps.$[payment].vaNumber': vaNumber,
+          'topUps.$[payment].bankName': typeof bank?.short_name === 'string' ? bank.short_name : bankCode,
+          'topUps.$[payment].bankCode': bankCode,
+          'topUps.$[payment].expiresAt': providerExpiry(providerData.expired_at) ?? expiresAt,
+          'topUps.$[payment].reviewReason': null,
+        },
+      },
+      { arrayFilters: [{ 'payment.merchantRef': merchantRef, 'payment.status': 'creating' }] },
+    ).exec();
+
+    const saved = await this.findAttempt(keyId, { merchantRef });
+    if (!saved) throw new NotFoundException('Top-up Virtual Account tidak ditemukan.');
+    return this.toView(saved);
+  }
+
   async getTopUp(keyId: Types.ObjectId | string, merchantRef: string, clientId?: Types.ObjectId | string) {
     const attempt = await this.findAttempt(keyId, { merchantRef }, clientId);
     if (!attempt) throw new NotFoundException('Top-up tidak ditemukan untuk API key ini.');
@@ -319,7 +565,7 @@ export class SingaPayService {
 
   async getActiveTopUp(keyId: Types.ObjectId | string, clientId?: Types.ObjectId | string) {
     const attempt = await this.findActiveAttempt(keyId, clientId);
-    if (!attempt) throw new NotFoundException('Tidak ada pembayaran QRIS yang masih aktif.');
+    if (!attempt) throw new NotFoundException('Tidak ada top-up SingaPay yang masih perlu diperiksa.');
     return this.toView(attempt);
   }
 
@@ -329,6 +575,7 @@ export class SingaPayService {
     if (attempt.status === 'paid') {
       return this.toView(attempt);
     }
+    if (attempt.method === 'va') return this.reconcileVaTopUp(keyId, merchantRef, clientId, attempt);
 
     const config = this.getConfig();
     const token = await this.getAccessToken(config);
@@ -430,6 +677,440 @@ export class SingaPayService {
     }
 
     return this.createQrisTopUp(keyId, attempt.amountIdr, idempotencyKey, clientId, merchantRef);
+  }
+
+  async retryTopUp(
+    keyId: Types.ObjectId | string,
+    merchantRef: string,
+    idempotencyKey: string,
+    clientId?: Types.ObjectId | string,
+  ) {
+    const attempt = await this.findAttempt(keyId, { merchantRef }, clientId);
+    if (!attempt) throw new NotFoundException('Top-up tidak ditemukan untuk API key ini.');
+    return attempt.method === 'va'
+      ? this.retryVaTopUp(keyId, merchantRef, idempotencyKey, clientId)
+      : this.retryQrisTopUp(keyId, merchantRef, idempotencyKey, clientId);
+  }
+
+  private async retryVaTopUp(
+    keyId: Types.ObjectId | string,
+    merchantRef: string,
+    idempotencyKey: string,
+    clientId?: Types.ObjectId | string,
+  ) {
+    this.validateIdempotencyKey(idempotencyKey);
+    const attempt = await this.findAttempt(keyId, { merchantRef }, clientId);
+    if (!attempt) throw new NotFoundException('Top-up tidak ditemukan untuk API key ini.');
+    const existingRetry = await this.findAttempt(keyId, { idempotencyKey }, clientId);
+    if (existingRetry) {
+      if (existingRetry.retryOfMerchantRef !== merchantRef) {
+        throw new ConflictException('Idempotency-Key sudah digunakan untuk top-up lain. Gunakan key baru untuk percobaan ini.');
+      }
+      return this.reuseIdempotentAttempt(existingRetry, attempt.amountIdr);
+    }
+    if (attempt.status === 'paid') return this.toView(attempt);
+    if (!RETRYABLE_ATTEMPT_STATUSES.includes(attempt.status ?? 'pending')) {
+      throw new ConflictException('Virtual Account ini masih tersedia atau tidak memerlukan percobaan ulang. Periksa statusnya sebelum membuat VA baru.');
+    }
+
+    const config = this.getConfig();
+    const token = await this.getAccessToken(config);
+    const transactions = await this.findVaTransactionsByMerchantReference(config, token, attempt);
+    let statusToRelease: TopUpStatus = attempt.status ?? 'pending';
+    if (!transactions.complete || transactions.records.length > 1) {
+      const reason = transactions.records.length > 1
+        ? 'SingaPay menemukan beberapa transaksi VA dengan referensi ini. VA baru tidak dibuat; perlu pemeriksaan manual.'
+        : `Pencarian transaksi VA di SingaPay belum selesai. VA baru tidak dibuat agar pembayaran tidak ganda. Referensi log: ${transactions.diagnosticId ?? 'tidak tersedia'}.`;
+      await this.setAttemptState(keyId, merchantRef, 'needs_review', reason);
+      throw new ConflictException(reason);
+    }
+    if (transactions.records.length === 1) {
+      const current = await this.applyVaTransaction(keyId, merchantRef, clientId, attempt, transactions.records[0]);
+      if (current.status === 'paid' || current.status === 'pending') return current;
+      if (current.status !== 'expired' && current.status !== 'failed') {
+        throw new ConflictException(current.reviewReason ?? 'Status transaksi VA belum dapat dipastikan; VA baru tidak dibuat.');
+      }
+      statusToRelease = current.status;
+    } else {
+      const accounts = await this.findVirtualAccountsByMerchantReference(config, token, attempt);
+      if (!accounts.complete || accounts.records.length > 1) {
+        const reason = accounts.records.length > 1
+          ? 'SingaPay menemukan beberapa Virtual Account dengan referensi ini. VA baru tidak dibuat; perlu pemeriksaan manual.'
+          : `Pencarian Virtual Account di SingaPay belum selesai. VA baru tidak dibuat agar pembayaran tidak ganda. Referensi log: ${accounts.diagnosticId ?? 'tidak tersedia'}.`;
+        await this.setAttemptState(keyId, merchantRef, 'needs_review', reason);
+        throw new ConflictException(reason);
+      }
+      if (accounts.records.length === 1) {
+        const account = accounts.records[0];
+        const mismatch = this.vaAccountMismatch(attempt, account);
+        if (mismatch) {
+          await this.setAttemptState(keyId, merchantRef, 'needs_review', `${mismatch} VA baru tidak dibuat.`);
+          throw new ConflictException(`${mismatch} VA baru tidak dibuat.`);
+        }
+        const expiry = providerExpiry(account.expired_at) ?? attempt.expiresAt ?? null;
+        const expired = String(account.status ?? '').toLowerCase() === 'expired'
+          || Boolean(expiry && expiry.getTime() <= Date.now());
+        if (!expired && String(account.status ?? '').toLowerCase() === 'active') {
+          await this.updateVaAccountDetails(keyId, merchantRef, account, expiry);
+          return this.getTopUp(keyId, merchantRef, clientId);
+        }
+        if (!expired) {
+          const reason = 'Status Virtual Account di SingaPay belum dapat dipastikan. VA baru tidak dibuat.';
+          await this.setAttemptState(keyId, merchantRef, 'needs_review', reason);
+          throw new ConflictException(reason);
+        }
+        await this.keys.updateOne(
+          { _id: keyId, topUps: { $elemMatch: { merchantRef, status: { $in: PENDING_STATUSES } } } },
+          { $set: { 'topUps.$[payment].status': 'expired', 'topUps.$[payment].expiresAt': expiry } },
+          { arrayFilters: [{ 'payment.merchantRef': merchantRef, 'payment.status': { $in: PENDING_STATUSES } }] },
+        ).exec();
+        statusToRelease = 'expired';
+      }
+    }
+
+    const reviewOnly = statusToRelease === 'needs_review' || statusToRelease === 'failed';
+    const released = await this.keys.updateOne(
+      {
+        _id: keyId,
+        topUps: { $elemMatch: {
+          merchantRef,
+          source: 'singapay',
+          method: 'va',
+          amountIdr: attempt.amountIdr,
+          status: statusToRelease,
+          ...(reviewOnly ? { retryAllowed: { $ne: true } } : {}),
+        } },
+      },
+      {
+        $set: {
+          'topUps.$[payment].retryAllowed': true,
+          'topUps.$[payment].reviewReason': 'Pemeriksaan SingaPay selesai. VA pengganti hanya dibuat setelah transaksi lama tidak ditemukan atau dinyatakan kedaluwarsa.',
+        },
+      },
+      { arrayFilters: [{
+        'payment.merchantRef': merchantRef,
+        'payment.status': statusToRelease,
+        ...(reviewOnly ? { 'payment.retryAllowed': { $ne: true } } : {}),
+      }] },
+    ).exec();
+    if (released.matchedCount !== 1) {
+      const latest = await this.findAttempt(keyId, { merchantRef }, clientId);
+      if (latest?.status === 'paid' || (latest?.status === 'pending' && latest.vaNumber)) return this.toView(latest);
+      throw new ConflictException('Status top-up berubah saat diperiksa. Muat ulang status sebelum mencoba lagi.');
+    }
+    if (!attempt.bankCode || !SINGAPAY_VA_BANK_CODES.includes(attempt.bankCode as SingaPayVaBankCode)) {
+      throw new ConflictException('Kode bank untuk VA ini tidak tersedia. Muat ulang top-up sebelum mencoba lagi.');
+    }
+    return this.createVaTopUp(
+      keyId,
+      attempt.amountIdr,
+      attempt.bankCode as SingaPayVaBankCode,
+      idempotencyKey,
+      clientId,
+      merchantRef,
+    );
+  }
+
+  private async reconcileVaTopUp(
+    keyId: Types.ObjectId | string,
+    merchantRef: string,
+    clientId: Types.ObjectId | string | undefined,
+    attempt: KeyTopUp,
+  ) {
+    const config = this.getConfig();
+    const token = await this.getAccessToken(config);
+    const transactions = await this.findVaTransactionsByMerchantReference(config, token, attempt);
+    if (!transactions.complete || transactions.records.length > 1) {
+      const reason = transactions.records.length > 1
+        ? 'SingaPay menemukan beberapa transaksi VA dengan referensi ini. Pembayaran perlu ditinjau.'
+        : `Pencarian transaksi VA di SingaPay belum selesai. Periksa lagi sebelum membuat VA baru. Referensi log: ${transactions.diagnosticId ?? 'tidak tersedia'}.`;
+      await this.setAttemptState(keyId, merchantRef, 'needs_review', reason);
+      return this.getTopUp(keyId, merchantRef, clientId);
+    }
+    if (transactions.records.length === 1) {
+      return this.applyVaTransaction(keyId, merchantRef, clientId, attempt, transactions.records[0]);
+    }
+
+    const accounts = await this.findVirtualAccountsByMerchantReference(config, token, attempt);
+    if (!accounts.complete || accounts.records.length > 1) {
+      const reason = accounts.records.length > 1
+        ? 'SingaPay menemukan beberapa Virtual Account dengan referensi ini. Pembayaran perlu ditinjau.'
+        : `Pencarian Virtual Account di SingaPay belum selesai. Periksa lagi sebelum membuat VA baru. Referensi log: ${accounts.diagnosticId ?? 'tidak tersedia'}.`;
+      await this.setAttemptState(keyId, merchantRef, 'needs_review', reason);
+      return this.getTopUp(keyId, merchantRef, clientId);
+    }
+    if (accounts.records.length === 1) {
+      const account = accounts.records[0];
+      const mismatch = this.vaAccountMismatch(attempt, account);
+      if (mismatch) {
+        await this.setAttemptState(keyId, merchantRef, 'needs_review', mismatch);
+        return this.getTopUp(keyId, merchantRef, clientId);
+      }
+      const expiry = providerExpiry(account.expired_at) ?? attempt.expiresAt ?? null;
+      const expired = String(account.status ?? '').toLowerCase() === 'expired'
+        || Boolean(expiry && expiry.getTime() <= Date.now());
+      if (expired) {
+        await this.keys.updateOne(
+          { _id: keyId, topUps: { $elemMatch: { merchantRef, status: { $in: PENDING_STATUSES } } } },
+          { $set: { 'topUps.$[payment].status': 'expired', 'topUps.$[payment].expiresAt': expiry } },
+          { arrayFilters: [{ 'payment.merchantRef': merchantRef, 'payment.status': { $in: PENDING_STATUSES } }] },
+        ).exec();
+      } else if (String(account.status ?? '').toLowerCase() === 'active') {
+        await this.updateVaAccountDetails(keyId, merchantRef, account, expiry);
+      } else {
+        await this.setAttemptState(keyId, merchantRef, 'needs_review', 'Status Virtual Account di SingaPay belum dapat dipastikan.');
+      }
+      return this.getTopUp(keyId, merchantRef, clientId);
+    }
+
+    await this.setAttemptState(
+      keyId,
+      merchantRef,
+      'needs_review',
+      'SingaPay belum menemukan transaksi atau Virtual Account untuk referensi ini. Periksa kembali sebelum membuat VA baru.',
+    );
+    return this.getTopUp(keyId, merchantRef, clientId);
+  }
+
+  private async findVaTransactionsByMerchantReference(
+    config: SingaPayConfig,
+    token: string,
+    attempt: KeyTopUp,
+  ): Promise<ProviderSearchResult> {
+    if (!attempt.merchantRef) return { records: [], complete: false };
+    return this.findVaRecordsByMerchantReference(
+      config,
+      token,
+      attempt,
+      `/api/v1.0/va-transactions/${encodeURIComponent(config.accountId)}`,
+    );
+  }
+
+  private async findVirtualAccountsByMerchantReference(
+    config: SingaPayConfig,
+    token: string,
+    attempt: KeyTopUp,
+  ): Promise<ProviderSearchResult> {
+    if (!attempt.merchantRef) return { records: [], complete: false };
+    return this.findVaRecordsByMerchantReference(
+      config,
+      token,
+      attempt,
+      `/api/v1.0/virtual-accounts/${encodeURIComponent(config.accountId)}`,
+    );
+  }
+
+  private async findVaRecordsByMerchantReference(
+    config: SingaPayConfig,
+    token: string,
+    attempt: KeyTopUp,
+    path: string,
+  ): Promise<ProviderSearchResult> {
+    if (!attempt.merchantRef) return { records: [], complete: false };
+    const records: ProviderRecord[] = [];
+    const diagnosticId = randomBytes(6).toString('hex');
+    let complete = false;
+    let incompleteReason = 'page_limit_reached';
+    let diagnosticPage = 0;
+    let diagnosticDataType = 'unknown';
+    let diagnosticRows: number | null = null;
+    let diagnosticPagination: Record<string, unknown> | null = null;
+
+    for (let page = 1; page <= 20; page += 1) {
+      diagnosticPage = page;
+      const query = new URLSearchParams({
+        merchant_reff_no: attempt.merchantRef,
+        per_page: '100',
+        page: String(page),
+      });
+      const response = await this.getProviderJson(
+        `${config.baseUrl}${path}?${query.toString()}`,
+        token,
+        config.partnerId,
+      );
+      const envelope = asRecord(response);
+      diagnosticDataType = Array.isArray(envelope?.data)
+        ? 'array'
+        : envelope?.data === null ? 'null' : typeof envelope?.data;
+      if (!Array.isArray(envelope?.data)) {
+        incompleteReason = 'data_not_array';
+        break;
+      }
+      const rows = envelope.data;
+      diagnosticRows = rows.length;
+      for (const row of rows) {
+        const candidate = asRecord(row);
+        if (candidate?.merchant_reff_no === attempt.merchantRef) records.push(candidate);
+      }
+
+      const meta = asRecord(envelope?.meta);
+      const pagination = asRecord(meta?.pagination)
+        ?? asRecord(envelope?.pagination)
+        ?? meta;
+      diagnosticPagination = pagination;
+      const total = pagination?.total;
+      const count = pagination?.count;
+      const totalPages = pagination?.total_pages ?? pagination?.last_page;
+      const isZero = (value: unknown) => value === 0 || value === '0';
+      const isMissing = (value: unknown) => value === undefined || value === null;
+      const isMissingOrZero = (value: unknown) => isMissing(value) || isZero(value);
+      const emptyResultConfirmed = page === 1 && rows.length === 0 && records.length === 0
+        && (
+          [total, count, totalPages].every(isMissing)
+          || (isZero(total) && isMissingOrZero(count)
+            && (isMissingOrZero(totalPages) || totalPages === 1 || totalPages === '1'))
+          || (isZero(totalPages) && isMissingOrZero(total) && isMissingOrZero(count))
+        );
+      if (emptyResultConfirmed) {
+        complete = true;
+        break;
+      }
+      const reportedTotalPages = Number(totalPages);
+      if (!Number.isSafeInteger(reportedTotalPages) || reportedTotalPages < 1) {
+        incompleteReason = 'pagination_missing_or_invalid';
+        break;
+      }
+      if (page >= reportedTotalPages) {
+        complete = true;
+        break;
+      }
+      if (rows.length === 0) {
+        incompleteReason = 'empty_page_before_last_reported_page';
+        break;
+      }
+    }
+
+    if (!complete) {
+      this.logger.warn(
+          `SingaPay VA lookup incomplete; reference=${diagnosticId}; reason=${incompleteReason}; page=${diagnosticPage}; dataType=${diagnosticDataType}; rows=${diagnosticRows ?? 'unknown'}; total=${safePaginationValue(diagnosticPagination?.total)}; count=${safePaginationValue(diagnosticPagination?.count)}; total_pages=${safePaginationValue(diagnosticPagination?.total_pages ?? diagnosticPagination?.last_page)}`,
+      );
+    }
+    return {
+      records,
+      complete,
+      ...(!complete ? { diagnosticId, incompleteReason } : {}),
+    };
+  }
+
+  private vaAccountMismatch(attempt: KeyTopUp, account: ProviderRecord): string | null {
+    if (account.merchant_reff_no !== attempt.merchantRef) return 'Referensi Virtual Account di SingaPay tidak cocok dengan top-up.';
+    const amount = providerAmount(account);
+    if (!amount || amount.value !== attempt.amountIdr || amount.currency !== 'IDR') {
+      return 'Nominal atau mata uang Virtual Account di SingaPay tidak cocok dengan top-up.';
+    }
+    if (!attempt.bankCode || providerBankCode(account) !== attempt.bankCode) {
+      return 'Bank Virtual Account di SingaPay tidak cocok dengan top-up.';
+    }
+    if (typeof account.number !== 'string' || !account.number) return 'Nomor Virtual Account belum tersedia di SingaPay.';
+    if (attempt.vaNumber && attempt.vaNumber !== account.number) return 'Nomor Virtual Account di SingaPay tidak cocok dengan top-up.';
+    if (attempt.providerVirtualAccountId && attempt.providerVirtualAccountId !== account.id) {
+      return 'ID Virtual Account di SingaPay tidak cocok dengan top-up.';
+    }
+    return null;
+  }
+
+  private vaTransactionMismatch(attempt: KeyTopUp, transaction: ProviderRecord): string | null {
+    if (transaction.merchant_reff_no !== attempt.merchantRef) return 'Referensi transaksi VA di SingaPay tidak cocok dengan top-up.';
+    const amount = providerAmount(transaction);
+    if (!amount || amount.value !== attempt.amountIdr || amount.currency !== 'IDR') {
+      return 'Nominal atau mata uang transaksi VA di SingaPay tidak cocok dengan top-up.';
+    }
+    if (!attempt.bankCode || providerBankCode(transaction) !== attempt.bankCode) {
+      return 'Bank transaksi VA di SingaPay tidak cocok dengan top-up.';
+    }
+    if (typeof transaction.va_number !== 'string' || !transaction.va_number) return 'Nomor Virtual Account pada transaksi belum tersedia.';
+    if (attempt.vaNumber && attempt.vaNumber !== transaction.va_number) return 'Nomor Virtual Account pada transaksi tidak cocok dengan top-up.';
+    return null;
+  }
+
+  private async updateVaAccountDetails(
+    keyId: Types.ObjectId | string,
+    merchantRef: string,
+    account: ProviderRecord,
+    expiry: Date | null,
+  ) {
+    const bank = asRecord(account.bank);
+    const bankCode = providerBankCode(account);
+    await this.keys.updateOne(
+      { _id: keyId, topUps: { $elemMatch: { merchantRef, status: { $in: PENDING_STATUSES } } } },
+      {
+        $set: {
+          'topUps.$[payment].status': 'pending',
+          'topUps.$[payment].providerVirtualAccountId': typeof account.id === 'string' ? account.id : null,
+          'topUps.$[payment].vaNumber': typeof account.number === 'string' ? account.number : null,
+          'topUps.$[payment].bankName': typeof bank?.short_name === 'string' ? bank.short_name : bankCode,
+          'topUps.$[payment].bankCode': bankCode,
+          'topUps.$[payment].expiresAt': expiry,
+          'topUps.$[payment].reviewReason': null,
+          'topUps.$[payment].retryAllowed': false,
+        },
+      },
+      { arrayFilters: [{ 'payment.merchantRef': merchantRef, 'payment.status': { $in: PENDING_STATUSES } }] },
+    ).exec();
+  }
+
+  private async applyVaTransaction(
+    keyId: Types.ObjectId | string,
+    merchantRef: string,
+    clientId: Types.ObjectId | string | undefined,
+    attempt: KeyTopUp,
+    transaction: ProviderRecord,
+  ) {
+    const mismatch = this.vaTransactionMismatch(attempt, transaction);
+    if (mismatch) {
+      await this.setAttemptState(keyId, merchantRef, 'needs_review', mismatch);
+      return this.getTopUp(keyId, merchantRef, clientId);
+    }
+    const transactionId = typeof transaction.transaction_id === 'string'
+      ? transaction.transaction_id
+      : typeof transaction.id === 'string' || typeof transaction.id === 'number'
+        ? String(transaction.id)
+        : '';
+    if (!transactionId) {
+      await this.setAttemptState(keyId, merchantRef, 'needs_review', 'ID transaksi Virtual Account belum tersedia di SingaPay.');
+      return this.getTopUp(keyId, merchantRef, clientId);
+    }
+    const status = String(transaction.status ?? '').toLowerCase();
+    if (status === 'paid') {
+      const paid = providerAmount(transaction)!;
+      const credited = await this.creditAttempt(
+        keyId,
+        merchantRef,
+        paid.value,
+        transactionId,
+        merchantRef,
+        new Date(),
+      );
+      if (!credited) {
+        const latest = await this.findAttempt(keyId, { merchantRef }, clientId);
+        if (latest?.status !== 'paid') {
+          await this.setAttemptState(keyId, merchantRef, 'needs_review', 'SingaPay menunjukkan pembayaran VA lunas, tetapi saldo belum dapat dikredit otomatis.');
+        }
+      }
+      return this.getTopUp(keyId, merchantRef, clientId);
+    }
+    if (status === 'expired' || status === 'failed') {
+      await this.setAttemptState(keyId, merchantRef, status, `Transaksi VA berstatus ${status} di SingaPay.`);
+      return this.getTopUp(keyId, merchantRef, clientId);
+    }
+    if (status !== 'unpaid') {
+      await this.setAttemptState(keyId, merchantRef, 'needs_review', 'Status transaksi VA di SingaPay belum dapat dipastikan.');
+      return this.getTopUp(keyId, merchantRef, clientId);
+    }
+    await this.keys.updateOne(
+      { _id: keyId, topUps: { $elemMatch: { merchantRef, status: { $in: PENDING_STATUSES } } } },
+      {
+        $set: {
+          'topUps.$[payment].status': 'pending',
+          'topUps.$[payment].providerTransactionId': transactionId,
+          'topUps.$[payment].providerReference': merchantRef,
+          'topUps.$[payment].reviewReason': null,
+          'topUps.$[payment].retryAllowed': false,
+        },
+      },
+      { arrayFilters: [{ 'payment.merchantRef': merchantRef, 'payment.status': { $in: PENDING_STATUSES } }] },
+    ).exec();
+    return this.getTopUp(keyId, merchantRef, clientId);
   }
 
   private async lookupProviderRecord(
@@ -555,10 +1236,11 @@ export class SingaPayService {
     const eventName = typeof body?.event === 'string' ? body.event : 'unknown';
     const data = asRecord(body?.data);
     const transaction = asRecord(data?.transaction);
-    const transactionId = transaction?.id == null ? null : String(transaction.id);
-    const merchantRef = typeof transaction?.merchant_reff_no === 'string'
-      ? transaction.merchant_reff_no
-      : null;
+    const vaEvent = eventName === 'va-transaction';
+    const transactionIdValue = vaEvent ? transaction?.transaction_id : transaction?.id;
+    const transactionId = transactionIdValue == null ? null : String(transactionIdValue);
+    const merchantRefValue = vaEvent ? transaction?.reff_no : transaction?.merchant_reff_no;
+    const merchantRef = typeof merchantRefValue === 'string' ? merchantRefValue : null;
     const canonicalHash = createHash('sha256').update(canonicalBody).digest('hex');
     const eventKey = `${eventName}:${transactionId ?? canonicalHash}`;
 
@@ -587,8 +1269,8 @@ export class SingaPayService {
     if (!savedEvent) throw new ServiceUnavailableException('Event callback belum tersimpan.');
     if (savedEvent.processingStatus !== 'received') return { status: 'success' };
 
-    if (eventName !== 'qris-acquirer-transaction') {
-      await this.finishWebhook(eventKey, 'ignored', 'Jenis callback tidak ditangani oleh top-up QRIS.');
+    if (eventName !== 'qris-acquirer-transaction' && !vaEvent) {
+      await this.finishWebhook(eventKey, 'ignored', 'Jenis callback tidak ditangani oleh top-up.');
       return { status: 'success' };
     }
 
@@ -596,9 +1278,14 @@ export class SingaPayService {
     const paidAmount = Number(amountRecord?.value ?? transaction?.amount);
     const currency = typeof amountRecord?.currency === 'string' ? amountRecord.currency : '';
     const providerStatus = typeof transaction?.status === 'string' ? transaction.status.toLowerCase() : '';
+    const payment = asRecord(data?.payment);
+    const additionalInfo = asRecord(payment?.additional_info);
+    const bank = asRecord(additionalInfo?.bank);
+    const vaNumber = typeof additionalInfo?.va_number === 'string' ? additionalInfo.va_number : null;
+    const callbackBankCode = typeof bank?.bank_code === 'string' ? bank.bank_code.toUpperCase() : null;
     const succeeded = body?.success === true && providerStatus === 'paid';
     if (!succeeded) {
-      await this.finishWebhook(eventKey, 'ignored', 'Callback tidak menunjukkan transaksi QRIS lunas.');
+      await this.finishWebhook(eventKey, 'ignored', `Callback tidak menunjukkan transaksi ${vaEvent ? 'VA' : 'QRIS'} lunas.`);
       return { status: 'success' };
     }
     if (!merchantRef || !transactionId || !Number.isSafeInteger(paidAmount) || paidAmount < 1 || currency !== 'IDR') {
@@ -613,17 +1300,60 @@ export class SingaPayService {
       return { status: 'success' };
     }
 
+    if ((vaEvent && (attempt.method !== 'va'
+        || transaction?.type !== 'va'
+        || payment?.method !== 'va'
+        || transaction?.amount_type !== 'closed'
+        || !vaNumber
+        || !callbackBankCode
+        || (attempt.vaNumber !== null && attempt.vaNumber !== undefined && attempt.vaNumber !== vaNumber)
+        || !attempt.bankCode
+        || attempt.bankCode !== callbackBankCode))
+      || (!vaEvent && attempt.method === 'va')) {
+      await this.setAttemptState(key._id, merchantRef, 'needs_review', 'Metode, bank, atau nomor Virtual Account pada callback tidak cocok dengan top-up.');
+      await this.finishWebhook(eventKey, 'review', 'Metode, bank, atau nomor Virtual Account tidak cocok dengan top-up.');
+      return { status: 'success' };
+    }
+
     if (attempt.status === 'paid') {
       const sameTransaction = attempt.providerTransactionId === transactionId;
       await this.finishWebhook(eventKey, sameTransaction ? 'duplicate' : 'review', sameTransaction
         ? 'Callback transaksi yang sama telah diproses.'
-        : 'Referensi QRIS sudah lunas dengan ID transaksi berbeda.');
+        : 'Referensi top-up sudah lunas dengan ID transaksi berbeda.');
       return { status: 'success' };
     }
     if (attempt.amountIdr !== paidAmount) {
       await this.setAttemptState(key._id, merchantRef, 'needs_review', `Nominal dibayar Rp${paidAmount} tidak sama dengan nominal top-up Rp${attempt.amountIdr}.`);
       await this.finishWebhook(eventKey, 'review', 'Nominal pembayaran berbeda dari nominal top-up.');
       return { status: 'success' };
+    }
+    if (vaEvent && !attempt.vaNumber && vaNumber && callbackBankCode) {
+      await this.keys.updateOne(
+        {
+          _id: key._id,
+          topUps: { $elemMatch: {
+            merchantRef,
+            source: 'singapay',
+            method: 'va',
+            bankCode: callbackBankCode,
+            vaNumber: null,
+            status: { $in: PENDING_STATUSES },
+          } },
+        },
+        {
+          $set: {
+            'topUps.$[payment].vaNumber': vaNumber,
+            'topUps.$[payment].bankName': typeof bank?.short_name === 'string' ? bank.short_name : callbackBankCode,
+          },
+        },
+        { arrayFilters: [{
+          'payment.merchantRef': merchantRef,
+          'payment.method': 'va',
+          'payment.bankCode': callbackBankCode,
+          'payment.vaNumber': null,
+          'payment.status': { $in: PENDING_STATUSES },
+        }] },
+      ).exec();
     }
     if (!PENDING_STATUSES.includes(attempt.status ?? 'pending')) {
       await this.finishWebhook(eventKey, 'review', `Status top-up ${attempt.status ?? 'unknown'} tidak dapat dikredit otomatis.`);
@@ -732,6 +1462,8 @@ export class SingaPayService {
     if (!key) return null;
     const latestAttempt = [...(key.topUps ?? [])].reverse().find((item) => item.source === 'singapay');
     if (!latestAttempt || !RESUMABLE_TOPUP_STATUSES.includes(latestAttempt.status ?? 'pending')) return null;
+    if (latestAttempt.method === 'va' && latestAttempt.status === 'failed' && latestAttempt.retryAllowed === true
+      && !latestAttempt.vaNumber && !latestAttempt.qrData) return null;
     return latestAttempt;
   }
 
@@ -906,7 +1638,7 @@ export class SingaPayService {
 
   private reuseIdempotentAttempt(attempt: KeyTopUp, amountIdr: number) {
     if (attempt.amountIdr !== amountIdr) throw new ConflictException('Idempotency-Key sudah dipakai dengan nominal berbeda.');
-    if (attempt.status === 'creating') throw new ConflictException('QRIS dengan Idempotency-Key ini masih dibuat. Coba periksa statusnya sebentar lagi.');
+    if (attempt.status === 'creating') throw new ConflictException('Pembayaran dengan Idempotency-Key ini masih dibuat. Coba periksa statusnya sebentar lagi.');
     return this.toView(attempt);
   }
 
@@ -958,6 +1690,9 @@ export class SingaPayService {
       merchantRef: item.merchantRef ?? null,
       providerReference: item.providerReference ?? null,
       qrData: item.qrData ?? null,
+      vaNumber: item.vaNumber ?? null,
+      bankCode: item.bankCode ?? null,
+      bankName: item.bankName ?? null,
       expiresAt: item.expiresAt ?? null,
       createdAt: item.createdAt,
       paidAt: item.paidAt ?? null,

@@ -13,12 +13,16 @@ export interface KeyTopUp {
   source?: 'manual' | 'singapay';
   status?: 'creating' | 'pending' | 'paid' | 'expired' | 'failed' | 'needs_review';
   reason?: string | null;
-  method?: 'qris';
+  method?: 'qris' | 'va';
   merchantRef?: string | null;
   idempotencyKey?: string | null;
   providerTransactionId?: string | null;
+  providerVirtualAccountId?: string | null;
   providerReference?: string | null;
   qrData?: string | null;
+  vaNumber?: string | null;
+  bankCode?: string | null;
+  bankName?: string | null;
   expiresAt?: Date | null;
   paidAt?: Date | null;
   reviewReason?: string | null;
@@ -65,12 +69,16 @@ export class ClientKey {
       source: { type: String, enum: ['manual', 'singapay'], default: 'manual' },
       status: { type: String, enum: ['creating', 'pending', 'paid', 'expired', 'failed', 'needs_review'], default: 'paid' },
       reason: { type: String, default: null },
-      method: { type: String, enum: ['qris'], default: null },
+      method: { type: String, enum: ['qris', 'va'], default: null },
       merchantRef: { type: String },
       idempotencyKey: { type: String, default: null },
       providerTransactionId: { type: String, default: null },
+      providerVirtualAccountId: { type: String, default: null },
       providerReference: { type: String, default: null },
       qrData: { type: String, default: null },
+      vaNumber: { type: String, default: null },
+      bankCode: { type: String, default: null },
+      bankName: { type: String, default: null },
       expiresAt: { type: Date, default: null },
       paidAt: { type: Date, default: null },
       reviewReason: { type: String, default: null },

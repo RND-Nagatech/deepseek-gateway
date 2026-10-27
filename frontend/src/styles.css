@@ -288,7 +288,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .modal-head p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .modal-form { display: grid; gap: 15px; }
 .modal-form label { display: grid; gap: 7px; color: #53645a; font-size: 11px; font-weight: 500; }
-.modal-form input { width: 100%; height: 39px; padding: 0 11px; border: 1px solid var(--control-edge); border-radius: 7px; color: #405248; background: #fff; font-size: 12px; }
+.modal-form input, .modal-form select { width: 100%; height: 39px; padding: 0 11px; border: 1px solid var(--control-edge); border-radius: 7px; color: #405248; background: #fff; font-size: 12px; }
+.modal-form label > small { color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.4; }
 .modal-form input::placeholder { color: var(--muted); }
 .password-field { display: flex; align-items: center; gap: 7px; }
 .password-field button { flex: 0 0 auto; min-height: 40px; padding: 8px 9px; border: 0; color: #456b5d; background: transparent; font-size: 10px; cursor: pointer; }
@@ -296,11 +297,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .key-handling-note svg { flex: 0 0 auto; margin-top: 1px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .payment-loading { padding: 18px 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: #f6f8f5; font-size: 11px; text-align: center; }
-.qris-payment { display: grid; gap: 13px; padding: 15px; border: 1px solid #d7e1da; border-radius: 10px; background: #f5f8f5; animation: qris-in 220ms var(--ease) both; }
-.qris-payment-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.qris-payment-heading > div { display: grid; gap: 4px; }
-.qris-payment-heading > div > span { color: var(--muted); font-size: 10px; }
-.qris-payment-heading strong { color: #35493f; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.topup-payment { display: grid; gap: 13px; padding: 15px; border: 1px solid #d7e1da; border-radius: 10px; background: #f5f8f5; animation: qris-in 220ms var(--ease) both; }
+.topup-payment-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.topup-payment-heading > div { display: grid; gap: 4px; }
+.topup-payment-heading > div > span { color: var(--muted); font-size: 10px; }
+.topup-payment-heading strong { color: #35493f; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .payment-status { display: inline-flex; align-items: center; gap: 6px; padding: 5px 7px; border: 1px solid #d4ded7; border-radius: 999px; color: #485d50; background: #fff; font-size: 9px; line-height: 1.2; white-space: nowrap; }
 .payment-status i { width: 6px; height: 6px; border-radius: 50%; background: #839189; }
 .payment-status-pending i, .payment-status-creating i { background: #9a5f20; }
@@ -309,22 +310,27 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .qris-code-wrap { display: grid; justify-items: center; gap: 9px; }
 .qris-code-image { display: block; width: min(100%, 240px); height: auto; padding: 10px; border: 1px solid #dce4df; border-radius: 8px; background: #fff; }
 .qris-code-placeholder { width: 100%; min-height: 170px; display: grid; place-items: center; padding: 18px; border: 1px dashed #b8c5bd; border-radius: 8px; color: var(--muted); background: #fff; font-size: 11px; line-height: 1.5; text-align: center; }
-.qris-code-wrap p, .qris-status-message { max-width: 340px; margin: 0; color: #53645a; font-size: 10px; line-height: 1.55; text-align: center; }
-.qris-status-message { max-width: none; text-align: left; }
-.qris-payment-meta { display: grid; gap: 7px; margin: 0; padding-top: 10px; border-top: 1px solid #dce4df; }
-.qris-payment-meta > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.qris-payment-meta dt { color: var(--muted); font-size: 9px; }
-.qris-payment-meta dd { margin: 0; color: #4c5e53; font-size: 10px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; text-align: right; }
-.qris-retry-note { margin: 0; color: #72582f; font-size: 10px; line-height: 1.5; }
-.qris-actions { display: grid; gap: 8px; }
-.qris-retry, .qris-reconcile { width: 100%; justify-content: center; }
+.qris-code-wrap p, .topup-status-message { max-width: 340px; margin: 0; color: #53645a; font-size: 10px; line-height: 1.55; text-align: center; }
+.topup-status-message { max-width: none; text-align: left; }
+.topup-payment-meta { display: grid; gap: 7px; margin: 0; padding-top: 10px; border-top: 1px solid #dce4df; }
+.topup-payment-meta > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.topup-payment-meta dt { color: var(--muted); font-size: 9px; }
+.topup-payment-meta dd { margin: 0; color: #4c5e53; font-size: 10px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; text-align: right; }
+.va-payment-details { display: grid; justify-items: start; gap: 7px; padding: 12px; border: 1px solid #dce4df; border-radius: 8px; background: #fff; }
+.va-payment-details > span:first-child { color: var(--muted); font-size: 10px; }
+.va-payment-details > strong { color: #35493f; font-size: clamp(18px, 5vw, 23px); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .04em; overflow-wrap: anywhere; }
+.va-payment-details p { max-width: 340px; margin: 1px 0 0; color: #53645a; font-size: 10px; line-height: 1.55; }
+.copy-status { color: #476e5b; font-size: 10px; }
+.topup-retry-note { margin: 0; color: #72582f; font-size: 10px; line-height: 1.5; }
+.topup-actions { display: grid; gap: 8px; }
+.topup-retry, .topup-reconcile { width: 100%; justify-content: center; }
 .topup-error { margin: 0; align-items: flex-start; }
 .topup-error > svg { flex: 0 0 auto; margin-top: 1px; }
-.qris-raw-data { display: grid; gap: 8px; padding-top: 2px; color: #52635a; font-size: 10px; }
-.qris-raw-data summary { width: fit-content; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
-.qris-raw-data code { max-height: 70px; overflow: auto; padding: 7px; border-radius: 5px; color: #46594f; background: #e9efea; font-size: 9px; overflow-wrap: anywhere; }
-.qris-raw-data .text-button { display: inline-flex; align-items: center; gap: 5px; }
-.qris-raw-data > span { color: #476e5b; font-size: 9px; }
+.topup-raw-data { display: grid; gap: 8px; padding-top: 2px; color: #52635a; font-size: 10px; }
+.topup-raw-data summary { width: fit-content; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.topup-raw-data code { max-height: 70px; overflow: auto; padding: 7px; border-radius: 5px; color: #46594f; background: #e9efea; font-size: 9px; overflow-wrap: anywhere; }
+.topup-raw-data .text-button { display: inline-flex; align-items: center; gap: 5px; }
+.topup-raw-data > span { color: #476e5b; font-size: 9px; }
 .qris-inline-error { margin: 0; color: #91453c; font-size: 10px; line-height: 1.45; }
 
 .login-screen { min-height: 100vh; display: grid; grid-template-columns: minmax(380px, 470px) minmax(300px, 1fr); align-items: center; justify-content: center; gap: clamp(40px, 9vw, 130px); padding: 54px 9vw; background: #eef2ef; }

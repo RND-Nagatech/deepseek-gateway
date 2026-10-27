@@ -1,15 +1,20 @@
 export type View = 'overview' | 'clients' | 'usage' | 'pricing';
 export type TopUpStatus = 'creating' | 'pending' | 'paid' | 'expired' | 'failed' | 'needs_review';
+export type TopUpMethod = 'qris' | 'va';
+export type SingaPayVaBankCode = 'BCA' | 'BNI' | 'BRI' | 'MANDIRI' | 'PERMATA' | 'MAYBANK' | 'CIMB' | 'BSI' | 'MUAMALAT' | 'BNC' | 'OCBC' | 'DANAMON';
 
 export interface TopUp {
   amountIdr: number;
   currency: 'IDR';
-  method: 'qris';
+  method: TopUpMethod;
   status: TopUpStatus;
   source: 'manual' | 'singapay';
   merchantRef: string | null;
   providerReference: string | null;
   qrData: string | null;
+  vaNumber: string | null;
+  bankCode: SingaPayVaBankCode | null;
+  bankName: string | null;
   expiresAt: string | null;
   createdAt: string;
   paidAt: string | null;
@@ -29,7 +34,7 @@ export interface ClientKey {
     createdAt: string;
     source?: 'manual' | 'singapay';
     status?: TopUpStatus;
-    method?: 'qris' | null;
+    method?: TopUpMethod | null;
     merchantRef?: string | null;
     expiresAt?: string | null;
     paidAt?: string | null;

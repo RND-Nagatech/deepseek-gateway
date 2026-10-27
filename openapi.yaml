@@ -3,7 +3,7 @@ info:
   title: DeepSeek Monitor Self-Service API
   version: 1.0.0
   description: |
-    Balance, usage, and QRIS top-up endpoints for the client and API key represented by the supplied
+    Balance, usage, and SingaPay top-up endpoints for the client and API key represented by the supplied
     DeepSeek key. The key must be registered and active in DeepSeek Monitor.
     Token cache hit and cache miss values are details within input tokens;
     billable tokens are input plus output, so cache tokens are not added twice.
@@ -19,7 +19,7 @@ tags:
   - name: Account
     description: Balance and usage information for the authenticated API key
   - name: Top-ups
-    description: Create, recover, and inspect QRIS top-ups for the authenticated API key
+    description: Create, recover, and inspect QRIS or Virtual Account top-ups for the authenticated API key
 paths:
   /api/v1/me/balance:
     get:
@@ -43,7 +43,7 @@ paths:
     get:
       operationId: listMyTopUps
       tags: [Top-ups]
-      summary: List QRIS top-ups for the authenticated API key
+      summary: List SingaPay top-ups for the authenticated API key
       parameters:
         - name: limit
           in: query
@@ -55,7 +55,7 @@ paths:
             default: 50
       responses:
         '200':
-          description: QRIS top-ups, newest first
+          description: Top-ups, newest first
           content:
             application/json:
               schema:
@@ -115,15 +115,72 @@ paths:
                 $ref: '#/components/schemas/Error'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/me/topups/va:
+    post:
+      operationId: createMyVaTopUp
+      tags: [Top-ups]
+      summary: Create a temporary Virtual Account for this API key
+      description: |
+        Creates a one-use, temporary VA with a fixed IDR amount. The returned
+        number does not add funds immediately. The key balance is credited only
+        after a verified SingaPay VA callback confirms the exact amount, bank,
+        and VA number. Minimum amount is Rp10,000. Bank availability depends on
+        the merchant account's SingaPay activation.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: A unique client-generated key for this payment attempt; 8 to 128 safe characters.
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._:-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amountIdr:
+                  type: integer
+                  minimum: 10000
+                  maximum: 1000000000
+                  description: Fixed whole-rupiah amount to credit after provider confirmation
+                bankCode:
+                  type: string
+                  enum: [BCA, BNI, BRI, MANDIRI, PERMATA, MAYBANK, CIMB, BSI, MUAMALAT, BNC, OCBC, DANAMON]
+                  description: Bank code enabled for the merchant's SingaPay account
+              required: [amountIdr, bankCode]
+      responses:
+        '201':
+          description: Virtual Account payment attempt created or reused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopUpRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Existing payment must be checked or the idempotency key conflicts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/me/topups/active:
     get:
       operationId: getMyActiveTopUp
       tags: [Top-ups]
-      summary: Get the latest QRIS top-up that needs attention
+      summary: Get the latest top-up that needs attention
       description: Returns the most recent payment that still needs attention, including creating, pending, review-required, expired, or failed attempts.
       responses:
         '200':
-          description: Current or recoverable top-up status and QRIS details
+          description: Current or recoverable top-up status and method-specific payment details
           content:
             application/json:
               schema:
@@ -131,7 +188,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          description: No unfinished or recoverable QRIS top-up exists for this API key
+          description: No unfinished or recoverable top-up exists for this API key
           content:
             application/json:
               schema:
@@ -183,7 +240,7 @@ paths:
     get:
       operationId: getMyTopUp
       tags: [Top-ups]
-      summary: Get the status of one QRIS top-up
+      summary: Get the status of one top-up
       parameters:
         - name: merchantRef
           in: path
@@ -192,7 +249,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Top-up status and QRIS details
+          description: Top-up status and method-specific payment details
           content:
             application/json:
               schema:
@@ -211,10 +268,10 @@ paths:
     post:
       operationId: reconcileMyTopUp
       tags: [Top-ups]
-      summary: Refresh a QRIS top-up status from SingaPay
+      summary: Refresh a top-up status from SingaPay
       description: |
         Checks the existing SingaPay transaction and updates this payment record.
-        It never creates a replacement QR. A verified paid result credits the key
+        It never creates a replacement payment. A verified paid result credits the key
         balance once; ambiguous results remain marked for review.
       parameters:
         - name: merchantRef
@@ -241,14 +298,14 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/me/topups/{merchantRef}/retry:
     post:
-      operationId: retryMyQrisTopUp
+      operationId: retryMyTopUp
       tags: [Top-ups]
-      summary: Recover or replace a QRIS top-up
+      summary: Recover or replace a top-up
       description: |
         Checks SingaPay before creating anything. If the exact existing payment is found,
-        its QR or final status is returned. A new QR is created only after a complete
-        provider search finds no matching merchant reference. Ambiguous or incomplete
-        searches return a conflict and do not create another QR. A late verified callback
+        its payment details or final status are returned. A replacement is created only after complete
+        searches confirm the previous payment is absent or expired. Ambiguous or incomplete
+        searches return a conflict and do not create another payment. A late verified callback
         for an earlier attempt can still credit the balance once.
       parameters:
         - name: merchantRef
@@ -267,7 +324,7 @@ paths:
             pattern: '^[A-Za-z0-9._:-]+$'
       responses:
         '201':
-          description: Existing payment recovered or a replacement QR created
+          description: Existing payment recovered or a replacement payment created
           content:
             application/json:
               schema:
@@ -404,7 +461,7 @@ components:
           const: IDR
         method:
           type: string
-          const: qris
+          enum: [qris, va]
         source:
           type: string
           enum: [manual, singapay]
@@ -418,6 +475,15 @@ components:
         qrData:
           type: [string, 'null']
           description: EMV QRIS payload; present while a generated QR is available
+        vaNumber:
+          type: [string, 'null']
+          description: Virtual Account number; present while a generated VA is available
+        bankCode:
+          type: [string, 'null']
+          enum: [BCA, BNI, BRI, MANDIRI, PERMATA, MAYBANK, CIMB, BSI, MUAMALAT, BNC, OCBC, DANAMON, null]
+        bankName:
+          type: [string, 'null']
+          description: Human-readable bank name for the Virtual Account
         expiresAt:
           type: [string, 'null']
           format: date-time
@@ -429,7 +495,7 @@ components:
           format: date-time
         reviewReason:
           type: [string, 'null']
-      required: [amountIdr, currency, method, source, status, merchantRef, providerReference, qrData, expiresAt, createdAt, paidAt, reviewReason]
+      required: [amountIdr, currency, method, source, status, merchantRef, providerReference, qrData, vaNumber, bankCode, bankName, expiresAt, createdAt, paidAt, reviewReason]
     TopUpPage:
       type: object
       properties:

@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import { IsIn, IsInt, IsString, Length, Max, MaxLength, Min } from 'class-validator';
 import { AdminGuard } from '../common/admin.guard';
-import { SingaPayService } from '../payments/singapay.service';
+import { SingaPayService, SINGAPAY_VA_BANK_CODES, type SingaPayVaBankCode } from '../payments/singapay.service';
 import { ClientsService } from './clients.service';
 
 class CreateClientDto {
@@ -57,6 +57,16 @@ class QrisTopUpDto {
   @Min(1)
   @Max(1_000_000_000)
   amountIdr!: number;
+}
+
+class VaTopUpDto {
+  @IsInt()
+  @Min(10_000)
+  @Max(1_000_000_000)
+  amountIdr!: number;
+
+  @IsIn(SINGAPAY_VA_BANK_CODES)
+  bankCode!: SingaPayVaBankCode;
 }
 
 @Controller('api/clients')
@@ -112,6 +122,16 @@ export class ClientsController {
     return this.singaPay.createQrisTopUp(keyId, dto.amountIdr, idempotencyKey ?? '', id);
   }
 
+  @Post(':id/keys/:keyId/va-topups')
+  createVaTopUp(
+    @Param('id') id: string,
+    @Param('keyId') keyId: string,
+    @Body() dto: VaTopUpDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.singaPay.createVaTopUp(keyId, dto.amountIdr, dto.bankCode, idempotencyKey ?? '', id);
+  }
+
   @Get(':id/keys/:keyId/topups/active')
   getActiveTopUp(@Param('id') id: string, @Param('keyId') keyId: string) {
     return this.singaPay.getActiveTopUp(keyId, id);
@@ -142,6 +162,6 @@ export class ClientsController {
     @Param('merchantRef') merchantRef: string,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.singaPay.retryQrisTopUp(keyId, merchantRef, idempotencyKey ?? '', id);
+    return this.singaPay.retryTopUp(keyId, merchantRef, idempotencyKey ?? '', id);
   }
 }
