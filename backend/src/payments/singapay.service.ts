@@ -816,11 +816,14 @@ export class SingaPayService {
       const reportedCount = pagination?.count;
       const reportedPages = pagination?.total_pages;
       const isZero = (value: unknown) => value === 0 || value === '0';
+      const isMissing = (value: unknown) => value === undefined || value === null;
       const isMissingOrZero = (value: unknown) => value === undefined || value === null || isZero(value);
       const emptyResultConfirmed = page === 1
         && matches.length === 0
         && rows.length === 0
         && (
+          [reportedTotal, reportedCount, reportedPages].every(isMissing)
+          ||
           (isZero(reportedTotal)
             && isMissingOrZero(reportedCount)
             && (isMissingOrZero(reportedPages) || reportedPages === 1 || reportedPages === '1'))
