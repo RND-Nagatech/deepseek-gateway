@@ -32,7 +32,7 @@ async function bootstrap() {
   const gateway = app.get(GatewayService);
   fastify.route({
     method: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    url: '/proxy/*',
+    url: '/api/proxy/*',
     handler: (request, reply) => gateway.handle(request, reply),
   });
 

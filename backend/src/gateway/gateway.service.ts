@@ -73,7 +73,7 @@ export class GatewayService {
     const startedAt = new Date();
     const requestId = randomUUID();
     const originalUrl = request.raw.url ?? request.url;
-    const pathAndQuery = originalUrl.replace(/^\/proxy(?=\/|\?|$)/, '') || '/';
+    const pathAndQuery = originalUrl.replace(/^\/api\/proxy(?=\/|\?|$)/, '') || '/';
     const path = pathAndQuery.split('?')[0] || '/';
     const requestBody = request.body;
     const model = extractModel(requestBody);

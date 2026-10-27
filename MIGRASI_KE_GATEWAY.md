@@ -13,7 +13,7 @@ aplikasi client → https://api.deepseek.com → DeepSeek
 Setelah migrasi, request melewati gateway:
 
 ```text
-aplikasi client → https://deepseek.nagatech.id/proxy → DeepSeek Monitor → DeepSeek
+aplikasi client → https://deepseek.nagatech.id/api/proxy → DeepSeek Monitor → DeepSeek
 ```
 
 Gateway mengenali client dari API key DeepSeek yang sudah didaftarkan, meneruskan key tersebut ke DeepSeek, mencatat penggunaan, lalu mengurangi biaya dari saldo key yang sama.
@@ -29,7 +29,7 @@ Gateway mengenali client dari API key DeepSeek yang sudah didaftarkan, meneruska
 Untuk penggunaan di satu komputer, alamat gateway bawaan adalah:
 
 ```text
-http://127.0.0.1:3002/proxy
+http://127.0.0.1:3002/api/proxy
 ```
 
 Untuk client di komputer lain, publikasikan domain melalui reverse proxy atau load balancer HTTPS. Jika reverse proxy berjalan pada host yang sama, pertahankan backend pada `HOST=127.0.0.1`; jika backend berada di host/container berbeda, bind ke interface privat yang dapat dijangkau reverse proxy dan batasi dengan firewall. Gateway backend sendiri melayani HTTP. Sesuaikan `MONGODB_URI` dengan server MongoDB yang digunakan.
@@ -39,18 +39,18 @@ Untuk client di komputer lain, publikasikan domain melalui reverse proxy atau lo
 Untuk domain yang Anda berikan, base URL aplikasi client adalah:
 
 ```text
-https://deepseek.nagatech.id/proxy
+https://deepseek.nagatech.id/api/proxy
 ```
 
-Domain saja belum cukup. Reverse proxy di server domain harus meneruskan path `/proxy/` ke backend gateway, secara default pada `http://127.0.0.1:3002/proxy/`. Pastikan header `Authorization` diteruskan dan buffering respons dimatikan untuk mendukung streaming. Halaman root domain boleh dilayani terpisah dari API gateway.
+Domain saja belum cukup. Reverse proxy di server domain harus meneruskan path `/api/proxy/` ke backend gateway, secara default pada `http://127.0.0.1:3002/api/proxy/`. Pastikan header `Authorization` diteruskan dan buffering respons dimatikan untuk mendukung streaming. Halaman root domain boleh dilayani terpisah dari API gateway.
 
 Uji routing tanpa mengirim API key:
 
 ```sh
-curl -i https://deepseek.nagatech.id/proxy/chat/completions
+curl -i https://deepseek.nagatech.id/api/proxy/chat/completions
 ```
 
-Respons `401` dari gateway menandakan route `/proxy` sudah sampai ke backend; `404` berarti reverse proxy atau route domain belum mengarah ke gateway. Jangan alihkan client sungguhan sebelum pemeriksaan ini lolos.
+Respons `401` dari gateway menandakan route `/api/proxy` sudah sampai ke backend; `404` berarti reverse proxy atau route domain belum mengarah ke gateway. Jangan alihkan client sungguhan sebelum pemeriksaan ini lolos.
 
 ## 1. Siapkan konfigurasi gateway
 
@@ -88,7 +88,7 @@ Key yang didaftarkan adalah key provider milik client, bukan `ADMIN_TOKEN`. Gate
 
 ## 3. Ubah base URL aplikasi client
 
-Pertahankan API key dan pengaturan request yang sudah ada. Ubah base URL dari `https://api.deepseek.com` menjadi `https://deepseek.nagatech.id/proxy`. Domain gateway yang Anda berikan adalah `https://deepseek.nagatech.id`; suffix `/proxy` diperlukan karena route API gateway berada di bawah path tersebut.
+Pertahankan API key dan pengaturan request yang sudah ada. Ubah base URL dari `https://api.deepseek.com` menjadi `https://deepseek.nagatech.id/api/proxy`. Domain gateway yang Anda berikan adalah `https://deepseek.nagatech.id`; suffix `/api/proxy` diperlukan karena route API gateway berada di bawah path tersebut.
 
 ### Contoh Python
 
@@ -108,7 +108,7 @@ client = OpenAI(
 Untuk migrasi, ubah nilai lingkungan aplikasi client `DEEPSEEK_CLIENT_BASE_URL`:
 
 ```dotenv
-DEEPSEEK_CLIENT_BASE_URL=https://deepseek.nagatech.id/proxy
+DEEPSEEK_CLIENT_BASE_URL=https://deepseek.nagatech.id/api/proxy
 ```
 
 ### Contoh Node.js
@@ -122,14 +122,14 @@ const client = new OpenAI({
 });
 ```
 
-Atur `DEEPSEEK_CLIENT_BASE_URL=https://deepseek.nagatech.id/proxy` pada lingkungan aplikasi. SDK akan menambahkan path endpoint, misalnya `/chat/completions` atau `/responses`. Di sisi backend, `DEEPSEEK_BASE_URL` tetap menunjuk ke provider (`https://api.deepseek.com`); jangan ubah setting backend itu menjadi alamat gateway karena akan membuat proxy mengarah kembali ke dirinya sendiri.
+Atur `DEEPSEEK_CLIENT_BASE_URL=https://deepseek.nagatech.id/api/proxy` pada lingkungan aplikasi. SDK akan menambahkan path endpoint, misalnya `/chat/completions` atau `/responses`. Di sisi backend, `DEEPSEEK_BASE_URL` tetap menunjuk ke provider (`https://api.deepseek.com`); jangan ubah setting backend itu menjadi alamat gateway karena akan membuat proxy mengarah kembali ke dirinya sendiri.
 
 `DEEPSEEK_CLIENT_BASE_URL` adalah nama variabel contoh untuk aplikasi client. Jika aplikasi memakai nama konfigurasi base URL lain, ubah nilai pada variabel yang memang dibaca aplikasi tersebut.
 
 ### Contoh curl
 
 ```sh
-export DEEPSEEK_GATEWAY_URL="https://deepseek.nagatech.id/proxy"
+export DEEPSEEK_GATEWAY_URL="https://deepseek.nagatech.id/api/proxy"
 
 curl "${DEEPSEEK_GATEWAY_URL}/chat/completions" \
   -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
@@ -140,7 +140,7 @@ curl "${DEEPSEEK_GATEWAY_URL}/chat/completions" \
   }'
 ```
 
-Di konfigurasi client, base URL harus menunjuk ke root `/proxy`; jangan menambahkan `/chat/completions` ke nilai `baseURL` jika SDK sudah menambahkan path itu sendiri. Untuk `curl`, tambahkan path endpoint pada URL seperti contoh di atas.
+Di konfigurasi client, base URL harus menunjuk ke root `/api/proxy`; jangan menambahkan `/chat/completions` ke nilai `baseURL` jika SDK sudah menambahkan path itu sendiri. Untuk `curl`, tambahkan path endpoint pada URL seperti contoh di atas.
 
 ## 4. Uji tanpa memanggil DeepSeek asli
 
@@ -153,7 +153,7 @@ npm run dev:demo
 Mode ini mengarahkan gateway ke mock lokal. Daftarkan key demo persis `sk-local-demo`, top-up Rp10, lalu panggil:
 
 ```sh
-curl http://127.0.0.1:3002/proxy/chat/completions \
+curl http://127.0.0.1:3002/api/proxy/chat/completions \
   -H 'Authorization: Bearer sk-local-demo' \
   -H 'Content-Type: application/json' \
   -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"Halo"}]}'
@@ -170,7 +170,7 @@ Setelah client memakai base URL gateway:
 3. Buka **Client & key** dan pastikan saldo key berkurang.
 4. Pastikan request yang memakai streaming juga berfungsi jika aplikasi menggunakannya.
 
-Gateway menghitung token input dan output. Cache hit dan cache miss ditampilkan sebagai rincian input, bukan token tambahan yang dihitung dua kali. Request yang dikirim langsung ke DeepSeek tanpa melewati `/proxy` tidak muncul di dashboard gateway dan tidak mengurangi saldo gateway.
+Gateway menghitung token input dan output. Cache hit dan cache miss ditampilkan sebagai rincian input, bukan token tambahan yang dihitung dua kali. Request yang dikirim langsung ke DeepSeek tanpa melewati `/api/proxy` tidak muncul di dashboard gateway dan tidak mengurangi saldo gateway.
 
 ## Aturan saldo dan error
 

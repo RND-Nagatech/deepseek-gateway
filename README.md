@@ -38,10 +38,10 @@ Run the local mock provider, backend, and dashboard together:
 npm run dev:demo
 ```
 
-Open the dashboard, sign in with `local-dev-token`, register a client using the exact demo key `sk-local-demo`, then add at least Rp10 to that key's balance. This key is accepted only by the local mock provider; do not use it as a real DeepSeek credential. Set that client's API base URL to `http://127.0.0.1:3002/proxy` and send a request:
+Open the dashboard, sign in with `local-dev-token`, register a client using the exact demo key `sk-local-demo`, then add at least Rp10 to that key's balance. This key is accepted only by the local mock provider; do not use it as a real DeepSeek credential. Set that client's API base URL to `http://127.0.0.1:3002/api/proxy` and send a request:
 
 ```sh
-curl http://127.0.0.1:3002/proxy/chat/completions \
+curl http://127.0.0.1:3002/api/proxy/chat/completions \
   -H 'Authorization: Bearer sk-local-demo' \
   -H 'Content-Type: application/json' \
   -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"Halo"}]}'
@@ -60,7 +60,7 @@ Token usage is reported by DeepSeek after a request finishes. A request may star
 Then set that client's DeepSeek SDK/base URL to the gateway, for example:
 
 ```text
-http://127.0.0.1:3002/proxy
+http://127.0.0.1:3002/api/proxy
 ```
 
 The SDK appends its normal endpoint path, such as `/chat/completions` or `/responses`. The gateway records the request and streams the provider response back to the caller. Token usage is taken from DeepSeek's response when present; cache hit and cache miss are shown as input details and are not counted a second time.

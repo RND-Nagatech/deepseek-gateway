@@ -12,8 +12,8 @@ function requestWithBalance(balanceMicrosIdr: string) {
     headers: { authorization: 'Bearer sk-test-key-1234' },
     method: 'POST',
     body: { model: 'deepseek-chat', messages: [{ role: 'user', content: 'hello' }] },
-    raw: { url: '/proxy/chat/completions' },
-    url: '/proxy/chat/completions',
+    raw: { url: '/api/proxy/chat/completions' },
+    url: '/api/proxy/chat/completions',
     registeredKey: {
       _id: new Types.ObjectId(),
       balanceMicrosIdr: Types.Decimal128.fromString(balanceMicrosIdr),

@@ -9,10 +9,6 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': process.env.VITE_API_TARGET ?? 'http://127.0.0.1:3002',
-      '/proxy': {
-        target: process.env.VITE_API_TARGET ?? 'http://127.0.0.1:3002',
-        changeOrigin: true,
-      },
     },
   },
 });
