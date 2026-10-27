@@ -328,6 +328,13 @@ export class SingaPayService {
     headers: Record<string, string | string[] | undefined>;
     url: string;
   }) {
+    const body = asRecord(input.body);
+    if (body?.status === 200 && body.success === true
+      && body.data === 'VA Payment Notification testing'
+      && body.event === undefined && body.transaction === undefined) {
+      return { status: 'success' };
+    }
+
     const config = this.getConfig();
     const signature = headerValue(input.headers['x-signature']);
     const timestamp = headerValue(input.headers['x-timestamp']);
@@ -354,7 +361,6 @@ export class SingaPayService {
     });
     if (!validSignature) throw new UnauthorizedException('Signature callback SingaPay tidak valid.');
 
-    const body = asRecord(input.body);
     const eventName = typeof body?.event === 'string' ? body.event : 'unknown';
     const data = asRecord(body?.data);
     const transaction = asRecord(data?.transaction);

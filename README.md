@@ -75,6 +75,8 @@ Register `https://deepseek.nagatech.id/api/webhooks/singapay` as the merchant's 
 
 The backend uses the HMAC-SHA512 headers shown by SingaPay's Access Token v1.1 documentation. SingaPay's webhook page gives conflicting instructions for hashing the callback body, so the verifier accepts either its documented recursively sorted JSON form or the raw-body form while still requiring a valid HMAC signature. Verify both authentication and callback behavior with the merchant's sandbox account before switching to production.
 
+SingaPay's connectivity probe body (`status: 200`, `success: true`, `data: "VA Payment Notification testing"`) is acknowledged with `200` and `{ "status": "success" }` because it contains no transaction. Actual transaction callbacks still require valid SingaPay signature headers before they can be processed.
+
 ## Read balance and usage from another application
 
 The self-service API uses the same registered DeepSeek key as the proxy. It only returns data for the key sent with the request, even when its client has other keys. Send the registered key with the Authorization header using the Bearer scheme, or use the x-api-key header. Keep this key in a trusted server-side environment.
