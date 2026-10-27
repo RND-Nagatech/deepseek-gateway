@@ -459,10 +459,20 @@ export class SingaPayService {
       throw new ServiceUnavailableException('Integrasi SingaPay belum dikonfigurasi di environment backend.');
     }
 
-    const baseUrl = (required('SINGAPAY_BASE_URL') ?? 'https://sandbox-payment-b2b.singapay.id').replace(/\/+$/, '');
-    if (!['https://sandbox-payment-b2b.singapay.id', 'https://payment-b2b.singapay.id'].includes(baseUrl)) {
-      throw new ServiceUnavailableException('SINGAPAY_BASE_URL harus menggunakan endpoint sandbox atau production resmi.');
+    const configuredBaseUrl = required('SINGAPAY_BASE_URL') ?? 'https://sandbox-payment-b2b.singapay.id';
+    let parsedBaseUrl: URL;
+    try {
+      parsedBaseUrl = new URL(configuredBaseUrl);
+    } catch {
+      throw new ServiceUnavailableException('SINGAPAY_BASE_URL harus berupa URL HTTPS yang valid.');
     }
+    if (parsedBaseUrl.protocol !== 'https:' || !parsedBaseUrl.hostname
+      || parsedBaseUrl.username || parsedBaseUrl.password || parsedBaseUrl.search || parsedBaseUrl.hash) {
+      throw new ServiceUnavailableException(
+        'SINGAPAY_BASE_URL harus berupa URL HTTPS tanpa kredensial, query, atau fragment. Prefix path seperti https://singapay.nagatech.id/sandbox diperbolehkan.',
+      );
+    }
+    const baseUrl = parsedBaseUrl.href.replace(/\/+$/, '');
     return { baseUrl, clientId, clientSecret, partnerId, accountId };
   }
 

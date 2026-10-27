@@ -69,7 +69,7 @@ Requests must pass through the gateway to appear in this dashboard. This develop
 
 ## Top up a key with SingaPay QRIS
 
-Copy the `SINGAPAY_*` settings from `backend/.env.example` into `backend/.env`, then set the client ID, client secret, partner ID, and receiving account ID issued for your merchant. The configured base URL defaults to the SingaPay sandbox; change it to `https://payment-b2b.singapay.id` only after the merchant is ready for production. Never put these credentials in the frontend or commit them.
+Copy the `SINGAPAY_*` settings from `backend/.env.example` into `backend/.env`, then set the client ID, client secret, partner ID, and receiving account ID issued for your merchant. The configured base URL defaults to the SingaPay sandbox; change it to `https://payment-b2b.singapay.id` only after the merchant is ready for production. A custom HTTPS reverse-proxy URL with a path prefix is also supported, for example `https://singapay.nagatech.id/sandbox`; API routes are appended below that prefix. Never put these credentials in the frontend or commit them.
 
 Register `https://deepseek.nagatech.id/api/webhooks/singapay` as the merchant's transaction callback URL. The reverse proxy must preserve the `/api/webhooks/singapay` path. The dashboard's **Isi via QRIS** action creates a payment for that one key; it does not change balance until a signed callback confirms the same IDR amount. **Penyesuaian manual** remains an immediate admin-only credit and records its reason.
 
