@@ -59,6 +59,23 @@ class CreateVaTopUpDto {
   bankCode!: SingaPayVaBankCode;
 }
 
+class RetryTopUpDto {
+  @IsOptional()
+  @IsIn(['qris', 'va'])
+  method?: 'qris' | 'va';
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(1_000_000_000)
+  amountIdr?: number;
+
+  @IsOptional()
+  @IsIn(SINGAPAY_VA_BANK_CODES)
+  bankCode?: SingaPayVaBankCode;
+}
+
 class TopUpListQueryDto {
   @IsOptional()
   @Type(() => Number)
@@ -191,6 +208,7 @@ export class PublicApiController {
   retryTopUp(
     @Req() request: GatewayApiRequest,
     @Param('merchantRef') merchantRef: string,
+    @Body() dto: RetryTopUpDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     const identity = request.gatewayApiIdentity!;
@@ -199,6 +217,7 @@ export class PublicApiController {
       merchantRef,
       idempotencyKey ?? '',
       identity.client._id as Types.ObjectId,
+      dto ?? {},
     );
   }
 }

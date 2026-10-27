@@ -280,7 +280,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .notice-success { border: 1px solid #d2e3d8; color: #476e5b; background: #edf5ef; }
 .notice > button { margin-left: auto; padding: 3px; display: grid; place-items: center; border: 0; color: currentColor; background: transparent; cursor: pointer; }
 .modal-backdrop { position: fixed; z-index: 10; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(20, 35, 29, .42); }
-.modal-panel { width: min(100%, 488px); padding: 21px; border: 1px solid #dfe6e1; border-radius: 14px; background: #fbfcfa; box-shadow: 0 20px 60px rgba(22, 41, 32, .2); animation: modal-in 220ms var(--ease) both; }
+.modal-panel { width: min(100%, 520px); max-height: calc(100vh - 40px); max-height: calc(100dvh - 40px); overflow-y: auto; overscroll-behavior: contain; padding: 21px; border: 1px solid #dfe6e1; border-radius: 14px; background: #fbfcfa; box-shadow: 0 20px 60px rgba(22, 41, 32, .2); animation: modal-in 220ms var(--ease) both; }
 .modal-head, .modal-head > div { display: flex; align-items: flex-start; gap: 12px; }
 .modal-head { align-items: center; justify-content: space-between; margin-bottom: 22px; }
 .modal-head .modal-mark { width: 36px; height: 36px; }

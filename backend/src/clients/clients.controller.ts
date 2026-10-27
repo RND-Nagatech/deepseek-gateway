@@ -8,7 +8,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { IsIn, IsInt, IsString, Length, Max, MaxLength, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Length, Max, MaxLength, Min } from 'class-validator';
 import { AdminGuard } from '../common/admin.guard';
 import { SingaPayService, SINGAPAY_VA_BANK_CODES, type SingaPayVaBankCode } from '../payments/singapay.service';
 import { ClientsService } from './clients.service';
@@ -67,6 +67,22 @@ class VaTopUpDto {
 
   @IsIn(SINGAPAY_VA_BANK_CODES)
   bankCode!: SingaPayVaBankCode;
+}
+
+class RetryTopUpDto {
+  @IsOptional()
+  @IsIn(['qris', 'va'])
+  method?: 'qris' | 'va';
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(1_000_000_000)
+  amountIdr?: number;
+
+  @IsOptional()
+  @IsIn(SINGAPAY_VA_BANK_CODES)
+  bankCode?: SingaPayVaBankCode;
 }
 
 @Controller('api/clients')
@@ -160,8 +176,9 @@ export class ClientsController {
     @Param('id') id: string,
     @Param('keyId') keyId: string,
     @Param('merchantRef') merchantRef: string,
+    @Body() dto: RetryTopUpDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.singaPay.retryTopUp(keyId, merchantRef, idempotencyKey ?? '', id);
+    return this.singaPay.retryTopUp(keyId, merchantRef, idempotencyKey ?? '', id, dto ?? {});
   }
 }

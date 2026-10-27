@@ -306,7 +306,9 @@ paths:
         its payment details or final status are returned. A replacement is created only after complete
         searches confirm the previous payment is absent or expired. Ambiguous or incomplete
         searches return a conflict and do not create another payment. A late verified callback
-        for an earlier attempt can still credit the balance once.
+        for an earlier attempt can still credit the balance once. An optional request body can select
+        the replacement method, amount, and VA bank; these values are used only after the previous
+        payment has passed the safety checks.
       parameters:
         - name: merchantRef
           in: path
@@ -322,6 +324,26 @@ paths:
             minLength: 8
             maxLength: 128
             pattern: '^[A-Za-z0-9._:-]+$'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                method:
+                  type: string
+                  enum: [qris, va]
+                  description: Payment method for a safe replacement; defaults to the previous method
+                amountIdr:
+                  type: integer
+                  minimum: 1
+                  maximum: 1000000000
+                  description: Replacement amount in whole rupiah; VA requires at least Rp10,000
+                bankCode:
+                  type: string
+                  enum: [BCA, BNI, BRI, MANDIRI, PERMATA, MAYBANK, CIMB, BSI, MUAMALAT, BNC, OCBC, DANAMON]
+                  description: Required when replacing a QRIS with a Virtual Account
       responses:
         '201':
           description: Existing payment recovered or a replacement payment created

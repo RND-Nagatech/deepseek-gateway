@@ -26,6 +26,12 @@ export const SINGAPAY_VA_BANK_CODES = [
 ] as const;
 export type SingaPayVaBankCode = typeof SINGAPAY_VA_BANK_CODES[number];
 
+export interface RetryTopUpOptions {
+  method?: 'qris' | 'va';
+  amountIdr?: number;
+  bankCode?: SingaPayVaBankCode;
+}
+
 type TopUpStatus = NonNullable<KeyTopUp['status']>;
 
 interface SingaPayConfig {
@@ -603,21 +609,25 @@ export class SingaPayService {
     merchantRef: string,
     idempotencyKey: string,
     clientId?: Types.ObjectId | string,
+    options: RetryTopUpOptions = {},
   ) {
     this.validateIdempotencyKey(idempotencyKey);
     const attempt = await this.findAttempt(keyId, { merchantRef }, clientId);
     if (!attempt) throw new NotFoundException('Top-up tidak ditemukan untuk API key ini.');
+    const replacement = this.resolveRetryOptions(attempt, 'qris', options);
 
     const existingRetry = await this.findAttempt(keyId, { idempotencyKey }, clientId);
     if (existingRetry) {
       if (existingRetry.retryOfMerchantRef !== merchantRef) {
         throw new ConflictException('Idempotency-Key sudah digunakan untuk top-up lain. Gunakan key baru untuk percobaan ini.');
       }
-      return this.reuseIdempotentAttempt(existingRetry, attempt.amountIdr);
+      this.assertRetryMatches(existingRetry, replacement);
+      return this.reuseIdempotentAttempt(existingRetry, replacement.amountIdr);
     }
 
     if (attempt.status === 'paid') return this.toView(attempt);
-    const retryableReview = attempt.status === 'needs_review' && !attempt.qrData;
+    const qrLifetimePassed = Boolean(attempt.expiresAt && attempt.expiresAt.getTime() <= Date.now());
+    const retryableReview = attempt.status === 'needs_review' && (!attempt.qrData || qrLifetimePassed);
     const retryableExpired = attempt.status === 'expired';
     const retryableFailed = attempt.status === 'failed' && !attempt.qrData;
     if (!retryableReview && !retryableExpired && !retryableFailed) {
@@ -646,7 +656,8 @@ export class SingaPayService {
       throw new ConflictException(reason);
     }
 
-    const reviewOnly = statusToRelease === 'needs_review' || statusToRelease === 'failed';
+    const requiresMissingQrData = statusToRelease === 'failed'
+      || (statusToRelease === 'needs_review' && !qrLifetimePassed);
     const released = await this.keys.updateOne(
       {
         _id: keyId,
@@ -655,19 +666,19 @@ export class SingaPayService {
           source: 'singapay',
           amountIdr: attempt.amountIdr,
           status: statusToRelease,
-          ...(reviewOnly ? { qrData: null } : {}),
+          ...(requiresMissingQrData ? { qrData: null } : {}),
         } },
       },
       {
         $set: {
           'topUps.$[payment].retryAllowed': true,
-          'topUps.$[payment].reviewReason': 'Pemeriksaan SingaPay selesai. QR pengganti hanya dibuat setelah transaksi lama tidak ditemukan atau dinyatakan kedaluwarsa.',
+          'topUps.$[payment].reviewReason': 'Pemeriksaan SingaPay selesai. Pembayaran pengganti hanya dibuat setelah transaksi lama tidak ditemukan atau dinyatakan kedaluwarsa.',
         },
       },
       { arrayFilters: [{
         'payment.merchantRef': merchantRef,
         'payment.status': statusToRelease,
-        ...(reviewOnly ? { 'payment.qrData': null } : {}),
+        ...(requiresMissingQrData ? { 'payment.qrData': null } : {}),
       }] },
     ).exec();
     if (released.matchedCount !== 1) {
@@ -676,7 +687,7 @@ export class SingaPayService {
       throw new ConflictException('Status top-up berubah saat diperiksa. Muat ulang status sebelum mencoba lagi.');
     }
 
-    return this.createQrisTopUp(keyId, attempt.amountIdr, idempotencyKey, clientId, merchantRef);
+    return this.createReplacementTopUp(keyId, replacement, idempotencyKey, clientId, merchantRef);
   }
 
   async retryTopUp(
@@ -684,12 +695,13 @@ export class SingaPayService {
     merchantRef: string,
     idempotencyKey: string,
     clientId?: Types.ObjectId | string,
+    options: RetryTopUpOptions = {},
   ) {
     const attempt = await this.findAttempt(keyId, { merchantRef }, clientId);
     if (!attempt) throw new NotFoundException('Top-up tidak ditemukan untuk API key ini.');
     return attempt.method === 'va'
-      ? this.retryVaTopUp(keyId, merchantRef, idempotencyKey, clientId)
-      : this.retryQrisTopUp(keyId, merchantRef, idempotencyKey, clientId);
+      ? this.retryVaTopUp(keyId, merchantRef, idempotencyKey, clientId, options)
+      : this.retryQrisTopUp(keyId, merchantRef, idempotencyKey, clientId, options);
   }
 
   private async retryVaTopUp(
@@ -697,16 +709,19 @@ export class SingaPayService {
     merchantRef: string,
     idempotencyKey: string,
     clientId?: Types.ObjectId | string,
+    options: RetryTopUpOptions = {},
   ) {
     this.validateIdempotencyKey(idempotencyKey);
     const attempt = await this.findAttempt(keyId, { merchantRef }, clientId);
     if (!attempt) throw new NotFoundException('Top-up tidak ditemukan untuk API key ini.');
+    const replacement = this.resolveRetryOptions(attempt, 'va', options);
     const existingRetry = await this.findAttempt(keyId, { idempotencyKey }, clientId);
     if (existingRetry) {
       if (existingRetry.retryOfMerchantRef !== merchantRef) {
         throw new ConflictException('Idempotency-Key sudah digunakan untuk top-up lain. Gunakan key baru untuk percobaan ini.');
       }
-      return this.reuseIdempotentAttempt(existingRetry, attempt.amountIdr);
+      this.assertRetryMatches(existingRetry, replacement);
+      return this.reuseIdempotentAttempt(existingRetry, replacement.amountIdr);
     }
     if (attempt.status === 'paid') return this.toView(attempt);
     if (!RETRYABLE_ATTEMPT_STATUSES.includes(attempt.status ?? 'pending')) {
@@ -784,7 +799,7 @@ export class SingaPayService {
       {
         $set: {
           'topUps.$[payment].retryAllowed': true,
-          'topUps.$[payment].reviewReason': 'Pemeriksaan SingaPay selesai. VA pengganti hanya dibuat setelah transaksi lama tidak ditemukan atau dinyatakan kedaluwarsa.',
+          'topUps.$[payment].reviewReason': 'Pemeriksaan SingaPay selesai. Pembayaran pengganti hanya dibuat setelah transaksi lama tidak ditemukan atau dinyatakan kedaluwarsa.',
         },
       },
       { arrayFilters: [{
@@ -798,16 +813,68 @@ export class SingaPayService {
       if (latest?.status === 'paid' || (latest?.status === 'pending' && latest.vaNumber)) return this.toView(latest);
       throw new ConflictException('Status top-up berubah saat diperiksa. Muat ulang status sebelum mencoba lagi.');
     }
-    if (!attempt.bankCode || !SINGAPAY_VA_BANK_CODES.includes(attempt.bankCode as SingaPayVaBankCode)) {
-      throw new ConflictException('Kode bank untuk VA ini tidak tersedia. Muat ulang top-up sebelum mencoba lagi.');
+    return this.createReplacementTopUp(keyId, replacement, idempotencyKey, clientId, merchantRef);
+  }
+
+  private resolveRetryOptions(
+    attempt: KeyTopUp,
+    defaultMethod: 'qris' | 'va',
+    options: RetryTopUpOptions,
+  ): Required<Pick<RetryTopUpOptions, 'method' | 'amountIdr'>> & Pick<RetryTopUpOptions, 'bankCode'> {
+    const method = options.method ?? defaultMethod;
+    const amountIdr = options.amountIdr ?? attempt.amountIdr;
+    if (!Number.isSafeInteger(amountIdr) || amountIdr < 1 || amountIdr > 1_000_000_000) {
+      throw new BadRequestException('Nominal top-up harus berupa rupiah bulat antara Rp1 dan Rp1.000.000.000.');
     }
-    return this.createVaTopUp(
+    if (method === 'va' && amountIdr < 10_000) {
+      throw new BadRequestException('Nominal Virtual Account minimum Rp10.000.');
+    }
+    const candidateBankCode = method === 'va'
+      ? options.bankCode ?? (attempt.method === 'va' ? attempt.bankCode ?? undefined : undefined)
+      : undefined;
+    const bankCode = candidateBankCode && SINGAPAY_VA_BANK_CODES.includes(candidateBankCode as SingaPayVaBankCode)
+      ? candidateBankCode as SingaPayVaBankCode
+      : undefined;
+    if (method === 'va' && !bankCode) {
+      throw new BadRequestException('Pilih bank penerima yang didukung untuk Virtual Account.');
+    }
+    return { method, amountIdr, ...(bankCode ? { bankCode } : {}) };
+  }
+
+  private assertRetryMatches(
+    attempt: KeyTopUp,
+    replacement: Required<Pick<RetryTopUpOptions, 'method' | 'amountIdr'>> & Pick<RetryTopUpOptions, 'bankCode'>,
+  ) {
+    if (attempt.method !== replacement.method
+      || attempt.amountIdr !== replacement.amountIdr
+      || (replacement.method === 'va' && attempt.bankCode !== replacement.bankCode)) {
+      throw new ConflictException('Idempotency-Key sudah dipakai dengan metode, bank, atau nominal berbeda. Gunakan key baru.');
+    }
+  }
+
+  private createReplacementTopUp(
+    keyId: Types.ObjectId | string,
+    replacement: Required<Pick<RetryTopUpOptions, 'method' | 'amountIdr'>> & Pick<RetryTopUpOptions, 'bankCode'>,
+    idempotencyKey: string,
+    clientId: Types.ObjectId | string | undefined,
+    retryOfMerchantRef: string,
+  ) {
+    if (replacement.method === 'va') {
+      return this.createVaTopUp(
+        keyId,
+        replacement.amountIdr,
+        replacement.bankCode!,
+        idempotencyKey,
+        clientId,
+        retryOfMerchantRef,
+      );
+    }
+    return this.createQrisTopUp(
       keyId,
-      attempt.amountIdr,
-      attempt.bankCode as SingaPayVaBankCode,
+      replacement.amountIdr,
       idempotencyKey,
       clientId,
-      merchantRef,
+      retryOfMerchantRef,
     );
   }
 
