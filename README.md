@@ -95,6 +95,7 @@ Authenticate with `Authorization: Bearer <INTEGRATION_API_KEY>` or the `X-Integr
 - POST /api/v1/me/topups/{merchantRef}/release unlocks a failed QRIS request that never returned a QR code. It does not cancel anything at SingaPay or erase its history; if the old payment is confirmed late, its callback still credits the balance. The response exposes `canRelease` and `releasedAt` for the client UI.
 - POST /api/v1/me/topups/{merchantRef}/reconcile asks SingaPay for the existing payment status. It never creates another payment and can credit a confirmed payment once, including a late payment after expiry.
 - POST /api/v1/me/topups/{merchantRef}/retry checks SingaPay again and returns existing payment details if found. It creates a replacement only after a complete search confirms the old payment is absent or expired; ambiguous or incomplete searches are blocked. Use a new Idempotency-Key for each recovery attempt.
+- Client implementation guide for the stuck-QRIS release flow: [PANDUAN_CLIENT_LEPAS_QRIS_MACET.md](PANDUAN_CLIENT_LEPAS_QRIS_MACET.md).
 - GET /api/v1/me/usage/summary returns request/status totals, token totals, cost, and a daily series. It defaults to the last 30 days.
 - GET /api/v1/me/usage returns individual request records. Use limit (up to 100), optional ISO 8601 from/to filters (to is exclusive), and the returned nextCursor to fetch more records.
 

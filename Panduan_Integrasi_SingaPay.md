@@ -53,7 +53,7 @@ Cakupan: autentikasi, Virtual Account (VA), QRIS penerimaan pembayaran, serta ca
      "expired_at": "1793091600000",
      "max_usage": 1,
      "merchant_reff_no": "DS-REF-UNIK-001",
-     "name": "DeepSeek Monitor top-up"
+     "name": "Nagatech Agent Topup"
    }
    ```
 

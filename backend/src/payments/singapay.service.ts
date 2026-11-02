@@ -468,7 +468,7 @@ export class SingaPayService {
       expired_at: String(expiresAt.getTime()),
       max_usage: 1,
       merchant_reff_no: merchantRef,
-      name: 'DeepSeek Monitor top-up',
+      name: 'Nagatech Agent Topup',
     };
     const diagnosticId = randomBytes(6).toString('hex');
     const providerBase = new URL(config.baseUrl);
