@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { ClientsService } from '../clients/clients.service';
 import { MINIMUM_BALANCE_MICROS_IDR } from '../clients/balance';
-import { PricingService } from '../pricing/pricing.service';
+import { DEFAULT_PRICE_PER_MILLION_IDR } from '../common/schemas';
 import { findUsageInPayload } from '../pricing/token-usage';
 import { UsageService } from '../usage/usage.service';
 import { SseUsageSniffer } from './sse-usage-sniffer';
@@ -46,7 +46,6 @@ export class GatewayService {
   constructor(
     private readonly clients: ClientsService,
     private readonly usage: UsageService,
-    private readonly pricing: PricingService,
   ) {}
 
   async handle(request: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -105,11 +104,12 @@ export class GatewayService {
       return;
     }
 
-    let currentPrice = 50_000;
+    const configuredPrice = Number(registered.client.pricePerMillionIdr);
+    const currentPrice = Number.isSafeInteger(configuredPrice) && configuredPrice >= 0
+      ? configuredPrice
+      : DEFAULT_PRICE_PER_MILLION_IDR;
 
     try {
-      const setting = await this.pricing.getCurrent();
-      currentPrice = setting.pricePerMillionIdr;
       await this.usage.start(startEvent);
       await this.clients.touchKey(registered.key._id);
     } catch {

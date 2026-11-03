@@ -55,6 +55,7 @@ export interface Client {
   id: string;
   name: string;
   status: 'active' | 'paused';
+  pricePerMillionIdr: number;
   createdAt: string;
   requests: number;
   billableTokens: number;
@@ -93,12 +94,6 @@ export interface Overview {
   series: Array<{ date: string; tokens: number; costIdr: number }>;
   topClients: Array<{ id: string; name: string; requests: number; tokens: number; costIdr: number }>;
   latest: UsageRow[];
-}
-
-export interface Pricing {
-  currency: 'IDR';
-  pricePerMillionIdr: number;
-  updatedAt?: string;
 }
 
 export interface Health {

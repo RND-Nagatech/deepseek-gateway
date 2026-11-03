@@ -49,7 +49,7 @@ curl http://127.0.0.1:3002/api/proxy/chat/completions \
 
 The mock returns 120 input tokens (40 cache hit and 80 cache miss) plus 80 output tokens. At Rp50,000 per 1M tokens the dashboard should show 200 billable tokens, a Rp10 charge, and the same deduction from that key's balance. Add `"stream":true` to the JSON body and use `curl -N` to try streamed responses. `npm run dev` connects to the real DeepSeek API; `npm run dev:demo` sends requests only to the local mock.
 
-Optional backend settings are listed in `backend/.env.example`. Copy it to `backend/.env` to change the host/port, MongoDB URI, DeepSeek base URL, dashboard token, key fingerprint secret, starting rate, or SingaPay credentials. To let clients on another machine reach the gateway, set `HOST=0.0.0.0`, then use this machine's LAN address in their DeepSeek base URL. Keep `KEY_HASH_SECRET` stable after registering keys; changing it makes existing fingerprints unmatchable.
+Optional backend settings are listed in `backend/.env.example`. Copy it to `backend/.env` to change the host/port, MongoDB URI, DeepSeek base URL, dashboard token, key fingerprint secret, starting per-client rate, or SingaPay credentials. To let clients on another machine reach the gateway, set `HOST=0.0.0.0`, then use this machine's LAN address in their DeepSeek base URL. Keep `KEY_HASH_SECRET` stable after registering keys; changing it makes existing fingerprints unmatchable.
 
 ## Register a client key
 
@@ -122,7 +122,7 @@ Use the same `Idempotency-Key` when repeating a create request after a timeout. 
 
 ## Pricing
 
-The default rate is Rp50,000 per 1,000,000 tokens. The tariff uses `input + output`; cache hit and cache miss break down input. The price applied to each completed request is stored with its usage event so later tariff changes affect new requests only.
+Set a separate rate for each client in **Tarif per client**. Existing clients are initialized from the previous global rate when the backend starts; new clients use `DEFAULT_PRICE_PER_MILLION_IDR` (Rp50,000 by default). The tariff uses `input + output`; cache hit and cache miss break down input. Each completed request stores the client's rate alongside its cost, so later changes affect new requests only. Update a client's rate through the admin API with `PATCH /api/clients/{clientId}/pricing` and `{"pricePerMillionIdr":50000}`.
 
 ## Verify the project
 

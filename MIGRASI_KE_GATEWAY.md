@@ -24,7 +24,7 @@ Gateway mengenali client dari API key DeepSeek yang sudah didaftarkan, meneruska
 - Pastikan MongoDB terhubung dan gateway berstatus sehat di `/api/health`.
 - Gunakan `npm run dev` untuk meneruskan request ke DeepSeek asli. `npm run dev:demo` memakai mock lokal dan hanya untuk uji coba.
 - Siapkan nama client, API key DeepSeek yang sedang dipakai, serta saldo awal minimal Rp10 untuk setiap key.
-- Tentukan harga token di halaman **Tarif**. Nilai awal proyek adalah Rp50.000 per 1 juta token.
+- Tentukan harga token setiap client di halaman **Tarif per client**. Client baru memakai tarif awal Rp50.000 per 1 juta token.
 
 Untuk penggunaan di satu komputer, alamat gateway bawaan adalah:
 
@@ -63,10 +63,10 @@ MONGODB_URI=mongodb://127.0.0.1:27017/deepseek_monitor
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 ADMIN_TOKEN=GANTI_DENGAN_TOKEN_ADMIN_YANG_KUAT
 KEY_HASH_SECRET=GANTI_DENGAN_SECRET_RANDOM_YANG_STABIL
-PRICE_PER_MILLION_IDR=50000
+DEFAULT_PRICE_PER_MILLION_IDR=50000
 ```
 
-Ganti kedua nilai contoh tersebut sebelum menjalankan server yang dapat diakses melalui jaringan. `ADMIN_TOKEN` dipakai untuk membuka dashboard dan API pengelolaannya; nilainya berbeda dari API key DeepSeek client. Buat `KEY_HASH_SECRET` sebelum mendaftarkan key pertama, lalu pertahankan nilainya; menggantinya membuat fingerprint key lama tidak cocok lagi. Jangan gunakan token contoh lokal jika dashboard dapat diakses dari jaringan.
+Ganti nilai token dan secret sebelum menjalankan server yang dapat diakses melalui jaringan. `DEFAULT_PRICE_PER_MILLION_IDR` menentukan tarif awal client baru. Tarif client lama dari pengaturan global sebelumnya akan disalin saat backend pertama kali dimulai setelah update. `ADMIN_TOKEN` dipakai untuk membuka dashboard dan API pengelolaannya; nilainya berbeda dari API key DeepSeek client. Buat `KEY_HASH_SECRET` sebelum mendaftarkan key pertama, lalu pertahankan nilainya; menggantinya membuat fingerprint key lama tidak cocok lagi. Jangan gunakan token contoh lokal jika dashboard dapat diakses dari jaringan.
 
 Jalankan aplikasi dari direktori proyek:
 

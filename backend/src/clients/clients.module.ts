@@ -1,7 +1,14 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AdminGuard } from '../common/admin.guard';
-import { Client, ClientKey, ClientKeySchema, ClientSchema } from '../common/schemas';
+import {
+  AppSetting,
+  AppSettingSchema,
+  Client,
+  ClientKey,
+  ClientKeySchema,
+  ClientSchema,
+} from '../common/schemas';
 import { UsageEvent, UsageEventSchema } from '../common/schemas';
 import { SingaPayModule } from '../payments/singapay.module';
 import { ClientsController } from './clients.controller';
@@ -12,6 +19,7 @@ import { ClientsService } from './clients.service';
     MongooseModule.forFeature([
       { name: Client.name, schema: ClientSchema },
       { name: ClientKey.name, schema: ClientKeySchema },
+      { name: AppSetting.name, schema: AppSettingSchema },
       { name: UsageEvent.name, schema: UsageEventSchema },
     ]),
     SingaPayModule,

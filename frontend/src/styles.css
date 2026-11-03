@@ -252,33 +252,20 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .search-field input::placeholder { color: var(--muted); }
 .usage-toolbar .select-wrap { height: 36px; }
 .usage-count { margin-left: auto; color: var(--muted); font-size: 10px; white-space: nowrap; }
-.pricing-layout { display: grid; grid-template-columns: minmax(360px, 1fr) minmax(280px, .72fr); gap: 17px; align-items: stretch; }
-.pricing-form-panel, .calculation-panel { border: 1px solid #dfe6e1; border-radius: var(--radius-panel); background: var(--paper); }
-.pricing-form-panel { padding: 22px 23px; }
-.pricing-panel-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
-.pricing-mark { width: 36px; height: 36px; color: #567466; border-color: #d4e0d8; background: #edf3ee; }
-.pricing-panel-heading h2 { margin: 0; color: #394a41; font-size: 13px; font-weight: 600; }
-.pricing-panel-heading p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
-.pricing-form-panel form > label { display: block; margin-bottom: 7px; color: #58685f; font-size: 11px; font-weight: 500; }
-.rupiah-input { height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border: 1px solid var(--control-edge); border-radius: 8px; background: #fff; }
-.rupiah-input:focus-within { border-color: var(--focus); box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 24%, transparent); }
-.rupiah-input > span { color: var(--muted); font-size: 13px; font-weight: 600; }
-.rupiah-input input { width: 100%; min-width: 0; border: 0; color: #35463d; background: transparent; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.rupiah-input small { flex: 0 0 auto; color: var(--muted); font-size: 10px; }
-.field-help { max-width: 510px; margin: 8px 0 16px; color: var(--muted); font-size: 10px; line-height: 1.55; }
-.pricing-divider { height: 1px; margin: 21px 0 15px; background: #e7ece8; }
-.pricing-current { display: grid; gap: 4px; }
-.pricing-current > span { color: var(--muted); font-size: 10px; }
-.pricing-current strong { color: #3c5548; font-size: 16px; font-weight: 600; }
-.pricing-current small { color: var(--muted); font-size: 10px; font-weight: 400; }
-.calculation-panel { position: relative; padding: 22px 22px 18px; color: #eef3ef; background: #30463d; overflow: hidden; }
-.calculation-label { color: #b7c8bd; font-size: 10px; }
-.calculation-panel h2 { margin: 10px 0 19px; color: #fff; font-size: 27px; font-weight: 500; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
-.calculation-breakdown { display: grid; grid-template-columns: 1fr auto; gap: 9px 15px; padding-bottom: 16px; border-bottom: 1px solid #566a60; color: #bdcbc3; font-size: 10px; }
-.calculation-breakdown strong { color: #eff5f0; font-size: 10px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.calculation-result { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 15px 0 12px; color: #d5ded8; font-size: 11px; }
-.calculation-result strong { color: #edbd74; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.calculation-panel > p { margin: 0; color: #acbcb2; font-size: 10px; line-height: 1.55; }
+.pricing-client-list { overflow: hidden; border: 1px solid #dfe6e1; border-radius: var(--radius-panel); background: var(--paper); }
+.pricing-client-heading, .pricing-client-row { display: grid; grid-template-columns: minmax(200px, 1.2fr) minmax(200px, .75fr) 120px; align-items: center; gap: 18px; }
+.pricing-client-heading { min-height: 42px; padding: 0 18px; border-bottom: 1px solid #e4eae6; color: var(--muted); background: #f7f9f6; font-size: 10px; }
+.pricing-client-row { min-height: 76px; padding: 12px 18px; }
+.pricing-client-row + .pricing-client-row { border-top: 1px solid #e9eeea; }
+.pricing-client-identity { min-width: 0; display: grid; gap: 4px; }
+.pricing-client-identity strong { overflow: hidden; color: #35483e; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.pricing-client-identity span { color: var(--muted); font-size: 10px; }
+.pricing-client-input { min-width: 0; height: 42px; display: flex; align-items: center; gap: 10px; padding: 0 11px; border: 1px solid var(--control-edge); border-radius: 7px; background: #fff; }
+.pricing-client-input:focus-within { border-color: var(--focus); box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 24%, transparent); }
+.pricing-client-input > span { color: var(--muted); font-size: 12px; font-weight: 600; }
+.pricing-client-input input { width: 100%; min-width: 0; border: 0; outline: 0; color: #35463d; background: transparent; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pricing-client-input small { flex: 0 0 auto; color: var(--muted); font-size: 9px; }
+.pricing-save { justify-self: end; min-width: 112px; }
 .pricing-rule { display: flex; gap: 11px; margin-top: 17px; padding: 14px 15px; border: 1px solid #dbe5de; border-radius: 9px; background: #f7faf6; }
 .rule-mark { width: 25px; height: 25px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; color: #4d7867; background: #e3eee6; }
 .pricing-rule strong { color: #476052; font-size: 11px; font-weight: 600; }
@@ -494,9 +481,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   .search-field { width: 100%; }
   .usage-toolbar .select-wrap { flex: 1; }
   .usage-count { font-size: 9px; }
-  .pricing-layout { grid-template-columns: 1fr; gap: 12px; }
-  .pricing-form-panel { padding: 17px 15px; }
-  .calculation-panel { padding: 18px 16px; }
+  .pricing-client-heading { display: none; }
+  .pricing-client-row { grid-template-columns: minmax(0, 1fr) auto; gap: 10px 12px; padding: 13px; }
+  .pricing-client-identity { grid-column: 1 / -1; }
+  .pricing-client-input { grid-column: 1; }
+  .pricing-save { grid-column: 2; min-height: 44px; }
   .pricing-rule { padding: 12px; }
   .login-screen { min-height: 100vh; min-height: 100dvh; display: block; padding: 8vh 16px 32px; }
   .login-card { max-width: 440px; margin: 0 auto; padding: 23px 20px; }

@@ -1,17 +1,47 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { createHmac, randomBytes } from 'node:crypto';
 import { Model, Types } from 'mongoose';
-import { Client, ClientKey, ClientDocument, ClientKeyDocument } from '../common/schemas';
+import {
+  AppSetting,
+  AppSettingDocument,
+  Client,
+  ClientKey,
+  ClientDocument,
+  ClientKeyDocument,
+  DEFAULT_PRICE_PER_MILLION_IDR,
+} from '../common/schemas';
 import { microsIdrToRupiah } from '../pricing/token-usage';
 import { debitMicroIdr, rupiahToMicroIdr } from './balance';
 
+function safePrice(value: unknown): number | null {
+  const price = Number(value);
+  return Number.isSafeInteger(price) && price >= 0 ? price : null;
+}
+
 @Injectable()
-export class ClientsService {
+export class ClientsService implements OnModuleInit {
   constructor(
     @InjectModel(Client.name) private readonly clients: Model<ClientDocument>,
     @InjectModel(ClientKey.name) private readonly keys: Model<ClientKeyDocument>,
+    @InjectModel(AppSetting.name) private readonly settings: Model<AppSettingDocument>,
   ) {}
+
+  private defaultPricePerMillionIdr = DEFAULT_PRICE_PER_MILLION_IDR;
+
+  async onModuleInit() {
+    const configuredDefault = safePrice(
+      process.env.DEFAULT_PRICE_PER_MILLION_IDR ?? process.env.PRICE_PER_MILLION_IDR,
+    ) ?? DEFAULT_PRICE_PER_MILLION_IDR;
+    const legacyPricing = await this.settings.findOne({ name: 'pricing' }).select('pricePerMillionIdr').lean().exec();
+    this.defaultPricePerMillionIdr = configuredDefault;
+    const migrationPrice = safePrice(legacyPricing?.pricePerMillionIdr) ?? configuredDefault;
+
+    await this.clients.updateMany(
+      { $or: [{ pricePerMillionIdr: { $exists: false } }, { pricePerMillionIdr: null }] },
+      { $set: { pricePerMillionIdr: migrationPrice } },
+    ).exec();
+  }
 
   private hashKey(rawKey: string): string {
     const secret = process.env.KEY_HASH_SECRET ?? 'local-only-change-this-key-hash-secret';
@@ -32,7 +62,11 @@ export class ClientsService {
     const keyHash = this.hashKey(normalizedKey);
     if (await this.keys.exists({ keyHash })) throw new ConflictException('This DeepSeek key is already registered.');
 
-    const client = await this.clients.create({ name: normalizedName, status: 'active' });
+    const client = await this.clients.create({
+      name: normalizedName,
+      status: 'active',
+      pricePerMillionIdr: this.defaultPricePerMillionIdr,
+    });
     try {
       const key = await this.keys.create({
         clientId: client._id,
@@ -46,6 +80,7 @@ export class ClientsService {
         id: client._id.toString(),
         name: client.name,
         status: client.status,
+        pricePerMillionIdr: client.pricePerMillionIdr,
         createdAt: client.createdAt,
           keys: [{
             id: key._id.toString(),
@@ -107,6 +142,7 @@ export class ClientsService {
         id,
         name: client.name,
         status: client.status,
+          pricePerMillionIdr: client.pricePerMillionIdr ?? this.defaultPricePerMillionIdr,
         createdAt: client.createdAt,
         requests: total?.requests ?? 0,
         billableTokens: total?.billableTokens ?? 0,
@@ -138,6 +174,21 @@ export class ClientsService {
     ).lean().exec();
     if (!client) throw new NotFoundException('Client not found.');
     return { id: String(client._id), name: client.name, status: client.status };
+  }
+
+  async updatePricing(clientId: string, pricePerMillionIdr: number) {
+    const client = await this.clients.findByIdAndUpdate(
+      clientId,
+      { $set: { pricePerMillionIdr } },
+      { new: true, runValidators: true },
+    ).lean().exec();
+    if (!client) throw new NotFoundException('Client not found.');
+    return {
+      id: String(client._id),
+      name: client.name,
+      pricePerMillionIdr: client.pricePerMillionIdr,
+      updatedAt: client.updatedAt,
+    };
   }
 
   async setStatus(clientId: string, status: 'active' | 'paused') {

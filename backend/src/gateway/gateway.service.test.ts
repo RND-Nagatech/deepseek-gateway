@@ -3,7 +3,6 @@ import test from 'node:test';
 import { Types } from 'mongoose';
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { ClientsService } from '../clients/clients.service';
-import { PricingService } from '../pricing/pricing.service';
 import { UsageService } from '../usage/usage.service';
 import { GatewayService } from './gateway.service';
 
@@ -58,11 +57,10 @@ test('rejects a key below Rp10 before contacting DeepSeek', async () => {
     rejectInsufficientBalance: async (input: unknown) => { rejected.push(input); },
     start: async () => { throw new Error('Usage should not start for a denied request.'); },
   } as unknown as UsageService;
-  const pricing = { getCurrent: async () => ({ pricePerMillionIdr: 50_000 }) } as unknown as PricingService;
   const { reply, result } = createReply();
 
   try {
-    await new GatewayService(clients, usage, pricing).handle(request as unknown as FastifyRequest, reply);
+    await new GatewayService(clients, usage).handle(request as unknown as FastifyRequest, reply);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -98,11 +96,10 @@ test('deducts confirmed usage from the key balance before returning the response
     start: async () => undefined,
     finish: async () => '10000000',
   } as unknown as UsageService;
-  const pricing = { getCurrent: async () => ({ pricePerMillionIdr: 50_000 }) } as unknown as PricingService;
   const { reply, result } = createReply();
 
   try {
-    await new GatewayService(clients, usage, pricing).handle(request as unknown as FastifyRequest, reply);
+    await new GatewayService(clients, usage).handle(request as unknown as FastifyRequest, reply);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalBaseUrl === undefined) delete process.env.DEEPSEEK_BASE_URL;
@@ -137,11 +134,10 @@ test('allows a request to overdraw the key balance by its confirmed charge', asy
     start: async () => undefined,
     finish: async () => '120000000',
   } as unknown as UsageService;
-  const pricing = { getCurrent: async () => ({ pricePerMillionIdr: 50_000 }) } as unknown as PricingService;
   const { reply, result } = createReply();
 
   try {
-    await new GatewayService(clients, usage, pricing).handle(request as unknown as FastifyRequest, reply);
+    await new GatewayService(clients, usage).handle(request as unknown as FastifyRequest, reply);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalBaseUrl === undefined) delete process.env.DEEPSEEK_BASE_URL;

@@ -38,6 +38,13 @@ class RenameClientDto {
   name!: string;
 }
 
+class ClientPricingDto {
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  pricePerMillionIdr!: number;
+}
+
 class ClientStatusDto {
   @IsIn(['active', 'paused'])
   status!: 'active' | 'paused';
@@ -108,6 +115,11 @@ export class ClientsController {
   @Patch(':id')
   rename(@Param('id') id: string, @Body() dto: RenameClientDto) {
     return this.clients.rename(id, dto.name);
+  }
+
+  @Patch(':id/pricing')
+  updatePricing(@Param('id') id: string, @Body() dto: ClientPricingDto) {
+    return this.clients.updatePricing(id, dto.pricePerMillionIdr);
   }
 
   @Patch(':id/status')

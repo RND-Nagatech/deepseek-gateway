@@ -3,7 +3,6 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ClientsModule } from './clients/clients.module';
 import { GatewayModule } from './gateway/gateway.module';
 import { HealthController } from './health.controller';
-import { PricingModule } from './pricing/pricing.module';
 import { UsageModule } from './usage/usage.module';
 import { PublicApiModule } from './public-api/public-api.module';
 
@@ -15,7 +14,6 @@ import { PublicApiModule } from './public-api/public-api.module';
       retryDelay: 500,
     }),
     ClientsModule,
-    PricingModule,
     UsageModule,
     PublicApiModule,
     GatewayModule,

@@ -7,6 +7,8 @@ export type UsageEventDocument = HydratedDocument<UsageEvent>;
 export type AppSettingDocument = HydratedDocument<AppSetting>;
 export type SingaPayWebhookEventDocument = HydratedDocument<SingaPayWebhookEvent>;
 
+export const DEFAULT_PRICE_PER_MILLION_IDR = 50_000;
+
 export interface KeyTopUp {
   amountIdr: number;
   createdAt: Date;
@@ -38,6 +40,9 @@ export class Client {
 
   @Prop({ default: 'active', enum: ['active', 'paused'] })
   status!: 'active' | 'paused';
+
+  @Prop({ type: Number, required: true, min: 0, default: DEFAULT_PRICE_PER_MILLION_IDR })
+  pricePerMillionIdr!: number;
 
   declare createdAt: Date;
   declare updatedAt: Date;

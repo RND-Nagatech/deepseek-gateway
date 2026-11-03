@@ -673,6 +673,7 @@ components:
           type: [number, 'null']
         pricePerMillionIdr:
           type: [number, 'null']
+          description: Client's rate per 1,000,000 tokens captured for this request
         startedAt:
           type: string
           format: date-time

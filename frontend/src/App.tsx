@@ -15,17 +15,32 @@ import { Icon, IconName } from './components/Icon';
 import { UsageTable } from './components/UsageTable';
 import { ApiError, apiRequest, checkHealth } from './lib/api';
 import { formatDate, formatNumber, formatRupiah, formatRupiahBalance } from './lib/format';
-import { Client, Health, Overview, Pricing, SingaPayVaBankCode, TopUp, TopUpMethod, TopUpStatus, UsageRow, View } from './types';
+import { Client, Health, Overview, SingaPayVaBankCode, TopUp, TopUpMethod, TopUpStatus, UsageRow, View } from './types';
 
 const navigation: Array<{ id: View; label: string; icon: IconName }> = [
   { id: 'overview', label: 'Ringkasan', icon: 'overview' },
   { id: 'clients', label: 'Client & key', icon: 'clients' },
   { id: 'usage', label: 'Riwayat request', icon: 'usage' },
-  { id: 'pricing', label: 'Tarif', icon: 'pricing' },
+  { id: 'pricing', label: 'Tarif per client', icon: 'pricing' },
 ];
 
 function formatTopUpAmountInput(amount: string) {
   return amount.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+
+function updateGroupedAmount(event: FormEvent<HTMLInputElement>, setAmount: (value: string) => void) {
+  const input = event.currentTarget;
+  const typedValue = input.value;
+  const cursorPosition = input.selectionStart ?? typedValue.length;
+  const digitsBeforeCursor = typedValue.slice(0, cursorPosition).replace(/\D/g, '').length;
+  const digits = typedValue.replace(/\D/g, '');
+  const formatted = formatTopUpAmountInput(digits);
+  const nextCursorPosition = formatTopUpAmountInput(digits.slice(0, digitsBeforeCursor)).length;
+
+  setAmount(digits);
+  window.requestAnimationFrame(() => {
+    if (input.value === formatted) input.setSelectionRange(nextCursorPosition, nextCursorPosition);
+  });
 }
 
 type ModalState =
@@ -82,7 +97,6 @@ export function App() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [clients, setClients] = useState<Client[]>([]);
   const [usage, setUsage] = useState<UsageRow[]>([]);
-  const [pricing, setPricing] = useState<Pricing | null>(null);
   const [pageError, setPageError] = useState('');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
@@ -101,24 +115,13 @@ export function App() {
   const [expandedClient, setExpandedClient] = useState<string | null>(null);
   const [usageClientFilter, setUsageClientFilter] = useState('all');
   const [usageSearch, setUsageSearch] = useState('');
-  const [priceInput, setPriceInput] = useState('50000');
+  const [pricingSavingClientId, setPricingSavingClientId] = useState<string | null>(null);
   const dialogRef = useRef<HTMLElement | null>(null);
   const modalTriggerRef = useRef<HTMLElement | null>(null);
   const successModalTimerRef = useRef<number | null>(null);
 
   function updateTopUpAmount(event: FormEvent<HTMLInputElement>) {
-    const input = event.currentTarget;
-    const typedValue = input.value;
-    const cursorPosition = input.selectionStart ?? typedValue.length;
-    const digitsBeforeCursor = typedValue.slice(0, cursorPosition).replace(/\D/g, '').length;
-    const digits = typedValue.replace(/\D/g, '');
-    const formatted = formatTopUpAmountInput(digits);
-    const nextCursorPosition = formatTopUpAmountInput(digits.slice(0, digitsBeforeCursor)).length;
-
-    setTopUpAmount(digits);
-    window.requestAnimationFrame(() => {
-      if (input.value === formatted) input.setSelectionRange(nextCursorPosition, nextCursorPosition);
-    });
+    updateGroupedAmount(event, setTopUpAmount);
   }
 
   function openModal(nextModal: Exclude<ModalState, null>) {
@@ -205,17 +208,14 @@ export function App() {
   }, []);
 
   async function fetchAll(token: string, period = days) {
-    const [overviewData, clientData, usageData, pricingData] = await Promise.all([
+    const [overviewData, clientData, usageData] = await Promise.all([
       apiRequest<Overview>(`/overview?days=${period}`, token),
       apiRequest<Client[]>('/clients', token),
       apiRequest<UsageRow[]>('/usage?limit=100', token),
-      apiRequest<Pricing>('/pricing', token),
     ]);
     setOverview(overviewData);
     setClients(clientData);
     setUsage(usageData);
-    setPricing(pricingData);
-    setPriceInput(String(pricingData.pricePerMillionIdr));
   }
 
   async function authorize(candidate: string, persist = true) {
@@ -311,10 +311,6 @@ export function App() {
     }, 5000);
     return () => window.clearInterval(timer);
   }, [authenticated, adminToken, modal, topUpPayment?.merchantRef, topUpPayment?.status]);
-
-  useEffect(() => {
-    if (pricing) setPriceInput(String(pricing.pricePerMillionIdr));
-  }, [pricing]);
 
   const filteredUsage = useMemo(() => {
     const query = usageSearch.trim().toLocaleLowerCase('id-ID');
@@ -549,26 +545,25 @@ export function App() {
     openModal({ mode: 'revoke-integration-key', client, key });
   }
 
-  async function savePricing(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const pricePerMillionIdr = Number(priceInput);
+  async function savePricing(clientId: string, pricePerMillionIdr: number) {
     if (!Number.isSafeInteger(pricePerMillionIdr) || pricePerMillionIdr < 0) {
       setPageError('Tarif harus berupa bilangan rupiah bulat dan tidak boleh negatif.');
       return;
     }
-    setLoading(true);
+    setPricingSavingClientId(clientId);
     setPageError('');
     try {
-      const updated = await apiRequest<Pricing>('/pricing', adminToken, {
-        method: 'PUT',
+      await apiRequest(`/clients/${clientId}/pricing`, adminToken, {
+        method: 'PATCH',
         body: JSON.stringify({ pricePerMillionIdr }),
       });
-      setPricing(updated);
-      flash('Tarif baru tersimpan. Tarif ini berlaku untuk request berikutnya.');
+      const clientName = clients.find((client) => client.id === clientId)?.name ?? 'Client';
+      flash(`Tarif ${clientName} diperbarui. Berlaku untuk request berikutnya.`);
+      await refreshAll();
     } catch (error) {
       setPageError(error instanceof Error ? error.message : 'Tarif tidak dapat disimpan.');
     } finally {
-      setLoading(false);
+      setPricingSavingClientId(null);
     }
   }
 
@@ -689,7 +684,6 @@ export function App() {
             <OverviewPage
               overview={overview}
               clients={clients}
-              pricing={pricing}
               days={days}
               setDays={setDays}
               onAdd={() => openModal({ mode: 'new-client' })}
@@ -727,11 +721,9 @@ export function App() {
 
           {view === 'pricing' && (
             <PricingPage
-              pricing={pricing}
-              value={priceInput}
-              loading={loading}
-              onChange={setPriceInput}
-              onSubmit={(event) => void savePricing(event)}
+              clients={clients}
+              savingClientId={pricingSavingClientId}
+              onSave={(clientId, pricePerMillionIdr) => void savePricing(clientId, pricePerMillionIdr)}
             />
           )}
         </main>
@@ -868,7 +860,6 @@ function PageHeading({ title, description, action }: { title: string; descriptio
 function OverviewPage({
   overview,
   clients,
-  pricing,
   days,
   setDays,
   onAdd,
@@ -876,7 +867,6 @@ function OverviewPage({
 }: {
   overview: Overview;
   clients: Client[];
-  pricing: Pricing | null;
   days: number;
   setDays: (days: number) => void;
   onAdd: () => void;
@@ -917,7 +907,7 @@ function OverviewPage({
                 const maxCost = Math.max(...overview.topClients.map((item) => item.costIdr), 1);
                 return <li key={client.id}><div className="ranking-row"><span className="ranking-number">{String(index + 1).padStart(2, '0')}</span><div className="ranking-content"><strong>{client.name}</strong><span>{formatNumber(client.tokens)} token · {formatNumber(client.requests)} request</span><div className="rank-track"><i style={{ width: `${Math.max(3, (client.costIdr / maxCost) * 100)}%` }} /></div></div><b>{formatRupiah(client.costIdr)}</b></div></li>;
               })}</ol>}
-              <div className="pricing-note"><span>Tarif aktif</span><strong>{formatRupiah(pricing?.pricePerMillionIdr ?? 50_000)} <small>/ 1 juta token</small></strong></div>
+              <div className="pricing-note"><span>Penetapan biaya</span><strong>Tarif mengikuti client</strong><button className="text-button" type="button" onClick={() => onNavigate('pricing')}>Kelola tarif</button></div>
             </aside>
           </section>
 
@@ -968,7 +958,7 @@ function ClientsPage({
           <div className="client-list-heading"><span>Daftar client</span><span>{clients.length} terdaftar</span></div>
           {clients.map((client) => <article className="client-entry" key={client.id}>
             <div className="client-entry-main">
-              <button className="client-expander" type="button" aria-expanded={expanded === client.id} onClick={() => onExpand(client.id)}><span className="client-avatar">{client.name.slice(0, 1).toLocaleUpperCase('id-ID')}</span><span className="client-identity"><strong>{client.name}</strong><small>{client.keys.length} key · dibuat {formatDate(client.createdAt, false)}</small></span><span className={`state ${client.status === 'active' ? 'state-success' : 'state-neutral'}`}><i />{client.status === 'active' ? 'Aktif' : 'Dijeda'}</span></button>
+              <button className="client-expander" type="button" aria-expanded={expanded === client.id} onClick={() => onExpand(client.id)}><span className="client-avatar">{client.name.slice(0, 1).toLocaleUpperCase('id-ID')}</span><span className="client-identity"><strong>{client.name}</strong><small>{client.keys.length} key · {formatRupiah(client.pricePerMillionIdr)} / 1 juta token</small></span><span className={`state ${client.status === 'active' ? 'state-success' : 'state-neutral'}`}><i />{client.status === 'active' ? 'Aktif' : 'Dijeda'}</span></button>
               <div className="client-stat"><strong>{formatNumber(client.requests)}</strong><span>request</span></div>
               <div className="client-stat"><strong>{formatNumber(client.billableTokens)}</strong><span>token</span></div>
               <div className="client-stat client-stat-cost"><strong>{formatRupiah(client.costIdr)}</strong><span>biaya tercatat</span></div>
@@ -1442,45 +1432,57 @@ function UsagePage({
 }
 
 function PricingPage({
-  pricing,
-  value,
-  loading,
-  onChange,
-  onSubmit,
+  clients,
+  savingClientId,
+  onSave,
 }: {
-  pricing: Pricing | null;
-  value: string;
-  loading: boolean;
-  onChange: (value: string) => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  clients: Client[];
+  savingClientId: string | null;
+  onSave: (clientId: string, pricePerMillionIdr: number) => void;
 }) {
-  const amount = Number(value);
-  const previewTokens = 100_000;
-  const previewCost = Number.isFinite(amount) ? (previewTokens / 1_000_000) * amount : 0;
   return (
     <>
-      <PageHeading title="Tarif token" description="Satu tarif rata untuk token input dan output. Cache hit/miss tetap terlihat sebagai rincian input." />
-      <div className="pricing-layout">
-        <section className="pricing-form-panel">
-          <div className="pricing-panel-heading"><span className="pricing-mark"><Icon name="pricing" size={18} /></span><div><h2>Tarif aktif</h2><p>Tarif yang dipakai menghitung request baru.</p></div></div>
-          <form onSubmit={onSubmit}>
-            <label htmlFor="price-per-million">Harga per 1 juta token</label>
-            <div className="rupiah-input"><span>Rp</span><input id="price-per-million" inputMode="numeric" type="number" min="0" step="1" value={value} onChange={(event) => onChange(event.target.value)} required /><small>/ 1 juta token</small></div>
-            <p className="field-help">Nilai historis request memakai tarif yang tersimpan ketika request terjadi. Perubahan tarif hanya berlaku untuk request berikutnya.</p>
-            <button className="button button-primary" type="submit" disabled={loading}>{loading ? 'Menyimpan…' : 'Simpan tarif'}</button>
-          </form>
-          <div className="pricing-divider" />
-          <div className="pricing-current"><span>Tarif tersimpan</span><strong>{formatRupiah(pricing?.pricePerMillionIdr ?? 50_000)} <small>/ 1 juta token</small></strong><span>{pricing?.updatedAt ? `Diubah ${formatDate(pricing.updatedAt)}` : 'Tarif awal'}</span></div>
+      <PageHeading title="Tarif per client" description="Tentukan harga token untuk tiap client. Tarif yang disimpan berlaku untuk request berikutnya." />
+      {clients.length === 0 ? <section className="empty-page"><span className="empty-page-mark"><Icon name="pricing" size={21} /></span><h2>Belum ada client untuk diatur</h2><p>Tambahkan client terlebih dahulu. Setiap client baru akan memakai tarif awal yang ditentukan server.</p></section> : (
+        <section className="pricing-client-list" aria-label="Tarif token per client">
+          <div className="pricing-client-heading"><span>Client</span><span>Harga per 1 juta token</span><span className="visually-hidden">Aksi</span></div>
+          {clients.map((client) => <ClientPricingRow
+            key={client.id}
+            client={client}
+            saving={savingClientId === client.id}
+            onSave={onSave}
+          />)}
         </section>
-        <aside className="calculation-panel">
-          <span className="calculation-label">Contoh kalkulasi</span>
-          <h2>{formatNumber(previewTokens)} token</h2>
-          <div className="calculation-breakdown"><span>Token terpakai</span><strong>{formatNumber(previewTokens)}</strong><span>Tarif per 1 juta</span><strong>{formatRupiah(amount)}</strong></div>
-          <div className="calculation-result"><span>Biaya</span><strong>{formatRupiah(previewCost)}</strong></div>
-          <p>Cache hit + cache miss adalah rincian token input. Keduanya tidak ditambahkan lagi di luar total input.</p>
-        </aside>
-      </div>
-      <section className="pricing-rule"><div className="rule-mark"><Icon name="check" size={17} /></div><div><strong>Input dihitung sekali</strong><p>Total yang ditarif = input + output. Input mencakup cache hit dan cache miss; angka cache disimpan agar pemakaian DeepSeek tetap bisa dibandingkan.</p></div></section>
+      )}
+      <section className="pricing-rule"><div className="rule-mark"><Icon name="check" size={17} /></div><div><strong>Tarif tersimpan bersama riwayat</strong><p>Biaya dihitung dari input + output dengan harga client tersebut. Cache hit dan miss hanya rincian input; perubahan tarif tidak mengubah biaya request lama.</p></div></section>
     </>
+  );
+}
+
+function ClientPricingRow({
+  client,
+  saving,
+  onSave,
+}: {
+  client: Client;
+  saving: boolean;
+  onSave: (clientId: string, pricePerMillionIdr: number) => void;
+}) {
+  const [value, setValue] = useState(String(client.pricePerMillionIdr));
+  const price = value === '' ? Number.NaN : Number(value);
+  const valid = Number.isSafeInteger(price) && price >= 0;
+  const changed = valid && price !== client.pricePerMillionIdr;
+  const inputId = `client-price-${client.id}`;
+
+  useEffect(() => {
+    setValue(String(client.pricePerMillionIdr));
+  }, [client.pricePerMillionIdr]);
+
+  return (
+    <form className="pricing-client-row" onSubmit={(event) => { event.preventDefault(); if (valid) onSave(client.id, price); }}>
+      <div className="pricing-client-identity"><strong>{client.name}</strong><span>{formatNumber(client.keys.length)} key · saat ini {formatRupiah(client.pricePerMillionIdr)} / 1 juta</span></div>
+      <label className="pricing-client-input" htmlFor={inputId}><span className="visually-hidden">Harga per satu juta token untuk {client.name}</span><span>Rp</span><input id={inputId} type="text" inputMode="numeric" maxLength={21} value={formatTopUpAmountInput(value)} onChange={(event) => updateGroupedAmount(event, setValue)} required /><small>/ 1 juta</small></label>
+      <button className="button button-quiet button-small pricing-save" type="submit" disabled={saving || !changed}>{saving ? 'Menyimpan…' : 'Simpan tarif'}</button>
+    </form>
   );
 }
