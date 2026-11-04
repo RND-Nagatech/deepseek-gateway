@@ -9,7 +9,7 @@ import { GatewayService } from './gateway/gateway.service';
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    new FastifyAdapter({ bodyLimit: 20 * 1024 * 1024 }),
+    new FastifyAdapter({ bodyLimit: 100 * 1024 * 1024 }),
     { bufferLogs: true, rawBody: true },
   );
 
